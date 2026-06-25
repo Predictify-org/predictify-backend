@@ -6,6 +6,72 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ---------------------------------------------------------------------------
+// Webhook tables
+// ---------------------------------------------------------------------------
+
+/**
+ * Stores a subscriber's endpoint configuration. The `secret` field holds a
+ * random 32-byte hex string that is used to compute the HMAC-SHA256 signature
+ * sent with every delivery.  `events` is an array of event-type strings the
+ * subscriber wants to receive (e.g. ["market.resolved", "dispute.opened"]).
+ */
+export const webhookSubscriptions = pgTable("webhook_subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** Destination URL for POST delivery */
+  url: text("url").notNull(),
+  /** Hex-encoded 32-byte HMAC secret — never returned to the client */
+  secret: text("secret").notNull(),
+  /** JSON array of subscribed event types */
+  events: jsonb("events").notNull().default([]),
+  /** Whether this subscription is currently active */
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Tracks each individual delivery attempt.  One logical event dispatch may
+ * create many rows here as retries accumulate.
+ *
+ * Status lifecycle:
+ *   pending → delivering → success
+ *                        ↓ (on 5xx / timeout)
+ *                       failed → pending (rescheduled)
+ *                              → terminal  (after 5 attempts)
+ *                              → dlq       (moved to dead-letter queue)
+ */
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  subscriptionId: uuid("subscription_id")
+    .notNull()
+    .references(() => webhookSubscriptions.id),
+  /** Arbitrary event type string, e.g. "market.resolved" */
+  eventType: text("event_type").notNull(),
+  /** Raw JSON payload that will be (re)sent on every attempt */
+  payload: jsonb("payload").notNull(),
+  /**
+   * Current lifecycle state:
+   *   - pending:    waiting to be picked up by the worker
+   *   - delivering: currently being attempted (prevents duplicate pickup)
+   *   - success:    received a 2xx response
+   *   - failed:     last attempt was non-2xx / timeout, will be retried
+   *   - terminal:   exhausted all retries (5 failed attempts)
+   *   - dlq:        moved to dead-letter queue for manual review
+   */
+  status: text("status").notNull().default("pending"),
+  /** Number of delivery attempts made so far */
+  attempt: integer("attempt").notNull().default(0),
+  /** Timestamp after which the next retry is allowed */
+  nextRetryAt: timestamp("next_retry_at", { withTimezone: true }).notNull().defaultNow(),
+  /** HTTP status code of the last attempt (null if not yet attempted) */
+  lastStatusCode: integer("last_status_code"),
+  /** Truncated response body or error message from the last attempt */
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const markets = pgTable("markets", {
   id: text("id").primaryKey(),
   question: text("question").notNull(),
