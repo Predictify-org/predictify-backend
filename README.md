@@ -24,6 +24,25 @@ npm run db:migrate
 npm run dev
 ```
 
+## Database migrations
+
+This project uses **Drizzle Kit** to generate and run PostgreSQL migrations.
+
+| Command | Purpose |
+|---|---|
+| `npm run db:generate` | Generate a new migration from schema changes |
+| `npm run db:migrate`  | Apply pending migrations to the database |
+| `npm run db:check-drift` | CI check — fails if schema changed but no migration covers it |
+
+### Workflow
+
+1. Edit `src/db/schema.ts` to add or modify tables.
+2. Run `npm run db:generate` — creates a new file under `drizzle/`.
+3. Review the generated SQL and commit it alongside the schema change.
+4. CI runs `npm run db:check-drift` to ensure schema and migrations stay in sync.
+
+> Never edit a committed migration. Always generate a new one.
+
 ## Layout
 
 ```
@@ -34,8 +53,10 @@ src/
   middleware/  errorHandler, auth (planned)
   db/          drizzle schema
 tests/         jest tests
-docs/          architecture docs
-scripts/       dev helpers
+drizzle/       generated migrations + meta
+scripts/       dev helpers (check-drizzle-drift.ts)
+.github/
+  workflows/   CI pipeline (lint, test, drift check, migrate)
 ```
 
 ## Roadmap
