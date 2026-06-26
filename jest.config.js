@@ -17,5 +17,9 @@ module.exports = {
   setupFiles: ["<rootDir>/tests/setup.ts"],
   collectCoverageFrom: ["src/**/*.ts"],
   coverageDirectory: "coverage",
-  setupFiles: ["./jest.setup.js"],
+  coverageThreshold: {
+    global: {
+      statements: 90,
+    },
+  },
 };

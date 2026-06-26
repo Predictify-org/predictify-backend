@@ -1,5 +1,7 @@
 # predictify-backend
 
+[![CI](https://github.com/omosvico/predictify-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/omosvico/predictify-backend/actions/workflows/ci.yml)
+
 Backend API for **Predictify** — a Stellar/Soroban prediction-markets dApp.
 
 This service indexes on-chain market state from the Predictify Soroban contract, exposes a REST API for the frontend, handles wallet-based authentication, and ships notifications + leaderboards.
