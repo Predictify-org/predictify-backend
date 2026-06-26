@@ -1,0 +1,22 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`errorHandler ZodError returns 400 with validation_error code and details 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "too_small",
+        "exact": false,
+        "inclusive": true,
+        "message": "String must contain at least 1 character(s)",
+        "minimum": 1,
+        "path": [
+          "name",
+        ],
+        "type": "string",
+      },
+    ],
+  },
+}
+`;
