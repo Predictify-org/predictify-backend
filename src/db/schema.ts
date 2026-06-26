@@ -35,14 +35,13 @@ export const indexerCursor = pgTable("indexer_cursor", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const indexerEvents = pgTable("indexer_events", {
-  id: serial("id").primaryKey(),
-  marketId: text("market_id").notNull().references(() => markets.id),
-  eventType: text("event_type").notNull(),
-  data: jsonb("data"),
-  ledger: integer("ledger").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+export const refreshTokens = pgTable("refresh_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  familyId: uuid("family_id").notNull(),
+  parentId: uuid("parent_id").references((): any => refreshTokens.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
-export type IndexerEvent = typeof indexerEvents.$inferSelect;
-export type NewIndexerEvent = typeof indexerEvents.$inferInsert;
