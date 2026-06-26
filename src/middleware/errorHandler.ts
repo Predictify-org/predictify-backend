@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { logger } from "../config/logger";
-import { AppError } from "../errors";
+import { getRequestId } from "../lib/requestContext";
 
 /*
  * Status → error code mapping:
@@ -14,23 +14,23 @@ import { AppError } from "../errors";
  *   5xx / unknown   → 500  internal_error    (internals never leaked)
  */
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
-  if (err instanceof ZodError) {
-    res.status(400).json({
-      error: { code: "validation_error", details: err.issues },
-    });
-    return;
-  }
+  // getRequestId() works here because the ALS middleware ran before us.
+  // Fall back to req.id (set by pinoHttp) in the unlikely event the store is
+  // not populated (e.g. the error was thrown before the ALS middleware ran).
+  const requestId = getRequestId() ?? (req.id as string | undefined);
 
-  if (err instanceof AppError) {
-    res.status(err.status).json({
-      error: { code: err.code },
-    });
-    return;
-  }
+  logger.error(
+    { err, path: req.path, method: req.method, reqId: requestId },
+    "request_failed",
+  );
 
-  const errObj = err as { status?: number; code?: string };
-  logger.error({ err, path: req.path, method: req.method }, "request_failed");
-  const status = errObj.status ?? 500;
-  const code = errObj.code ?? (status === 500 ? "internal_error" : "request_failed");
-  res.status(status).json({ error: { code } });
+  const status = (err as { status?: number }).status ?? 500;
+
+  res.status(status).json({
+    error: {
+      code: status === 500 ? "internal_error" : "request_failed",
+      // Expose the request ID so clients can quote it when reporting issues.
+      requestId,
+    },
+  });
 }
