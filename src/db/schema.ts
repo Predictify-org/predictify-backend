@@ -14,6 +14,17 @@ export const markets = pgTable("markets", {
   metadata: jsonb("metadata"),
   indexedLedger: integer("indexed_ledger").notNull(),
   archived: boolean("archived").notNull().default(false),
+  version: integer("version").notNull().default(1),
+});
+
+export const marketAuditLog = pgTable("market_audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  marketId: text("market_id").notNull().references(() => markets.id),
+  adminAddress: text("admin_address").notNull(),
+  action: text("action").notNull(),
+  beforeState: jsonb("before_state").notNull(),
+  afterState: jsonb("after_state").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const predictions = pgTable("predictions", {
