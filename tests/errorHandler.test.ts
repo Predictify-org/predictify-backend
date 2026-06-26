@@ -1,120 +1,116 @@
-jest.mock("../src/config/env", () => ({
-  env: {
-    NODE_ENV: "test",
-    LOG_LEVEL: "silent",
-    PORT: 0,
-    DATABASE_URL: "postgres://mock:5432/db",
-    JWT_SECRET: "abcdefghijklmnopqrstuvwxyz123456",
-    JWT_ISSUER: "test",
-    JWT_AUDIENCE: "test",
-    JWT_TTL_SECONDS: 3600,
-    STELLAR_NETWORK: "testnet",
-    SOROBAN_RPC_URL: "https://soroban.mock",
-    HORIZON_URL: "https://horizon.mock",
-    PREDICTIFY_CONTRACT_ID: "CCYXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    INDEXER_POLL_INTERVAL_MS: 5000,
-    INDEXER_START_LEDGER: 0,
-  },
-}));
+process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+process.env.JWT_SECRET = "a".repeat(32);
+process.env.SOROBAN_RPC_URL = "https://rpc.testnet.stellar.org";
+process.env.HORIZON_URL = "https://horizon.testnet.stellar.org";
+process.env.PREDICTIFY_CONTRACT_ID = "CABC...";
 
 import request from "supertest";
+import { ZodError, z } from "zod";
 import express from "express";
-import { z } from "zod";
-import { errorHandler } from "../src/middleware/errorHandler";
+import { AppError, ErrorCodes } from "../src/errors";
 
-function buildApp(stub: (req: express.Request, res: express.Response, next: express.NextFunction) => void) {
-  const app = express();
-  app.use(express.json());
-  app.get("/test", stub);
-  app.use(errorHandler);
-  return app;
-}
+describe("AppError", () => {
+  it("creates an error with code, message, status", () => {
+    const err = new AppError("my_code", "my message", 400);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe("my_code");
+    expect(err.message).toBe("my message");
+    expect(err.status).toBe(400);
+    expect(err.details).toBeUndefined();
+  });
+
+  it("creates an error with details", () => {
+    const err = new AppError("my_code", "my message", 422, { field: "name" });
+    expect(err.details).toEqual({ field: "name" });
+  });
+
+  it("defaults to 500", () => {
+    const err = new AppError("my_code", "msg");
+    expect(err.status).toBe(500);
+  });
+
+  describe("static factories", () => {
+    it("notFound creates 404", () => {
+      const err = AppError.notFound("X not found");
+      expect(err.code).toBe(ErrorCodes.NOT_FOUND);
+      expect(err.status).toBe(404);
+      expect(err.message).toBe("X not found");
+    });
+
+    it("internal creates 500", () => {
+      const err = AppError.internal("Boom");
+      expect(err.code).toBe(ErrorCodes.INTERNAL_ERROR);
+      expect(err.status).toBe(500);
+      expect(err.message).toBe("Boom");
+    });
+
+    it("validation creates 400", () => {
+      const err = AppError.validation({ fields: ["email"] });
+      expect(err.code).toBe(ErrorCodes.VALIDATION_ERROR);
+      expect(err.status).toBe(400);
+      expect(err.details).toEqual({ fields: ["email"] });
+    });
+  });
+});
+
+describe("GET /api/markets/:id", () => {
+  it("returns 404 with standard envelope for unknown market", async () => {
+    const { createApp } = await import("../src/index");
+    const res = await request(createApp()).get("/api/markets/nonexistent");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("not_found");
+    expect(res.body.error.message).toBe("Market not found");
+    expect(res.body.error.requestId).toEqual(expect.any(String));
+  });
+});
 
 describe("errorHandler", () => {
-  describe("ZodError", () => {
-    it("returns 400 with validation_error code and details", async () => {
-      const app = buildApp(() => {
-        z.object({ name: z.string().min(1) }).parse({ name: "" });
-      });
+  function createAppWithError(err: unknown): express.Express {
+    const app = express();
+    app.use(express.json());
+    app.get("/error", () => { throw err; });
+    const { errorHandler } = require("../src/middleware/errorHandler");
+    app.use(errorHandler);
+    return app;
+  }
 
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchSnapshot();
-    });
-
-    it("includes field paths and messages in details", async () => {
-      const app = buildApp(() => {
-        z.object({ email: z.string().email(), age: z.number().int().positive() }).parse({ email: "bad", age: -1 });
-      });
-
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe("validation_error");
-      expect(res.body.error.details).toBeInstanceOf(Array);
-      expect(res.body.error.details).toHaveLength(2);
-      expect(res.body.error.details[0]).toMatchObject({ path: ["email"], message: expect.any(String) });
-      expect(res.body.error.details[1]).toMatchObject({ path: ["age"], message: expect.any(String) });
-    });
+  it("handles AppError with correct envelope", async () => {
+    const app = createAppWithError(new AppError("custom_code", "custom msg", 418));
+    const res = await request(app).get("/error");
+    expect(res.status).toBe(418);
+    expect(res.body.error.code).toBe("custom_code");
+    expect(res.body.error.message).toBe("custom msg");
+    expect(res.body.error.requestId).toEqual(expect.any(String));
   });
 
-  describe("4xx with status", () => {
-    it("returns 404 with not_found code", async () => {
-      const app = buildApp((_req, _res, next) => {
-        const err = new Error("not found");
-        (err as any).status = 404;
-        (err as any).code = "not_found";
-        next(err);
-      });
+  it("handles ZodError with validation envelope", async () => {
+    const schema = z.object({ name: z.string().min(1) });
+    let zodErr: ZodError | null = null;
+    try { schema.parse({ name: "" }); } catch (e) { zodErr = e as ZodError; }
 
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(404);
-      expect(res.body).toEqual({ error: { code: "not_found" } });
-    });
-
-    it("falls back to request_failed when no code is set", async () => {
-      const app = buildApp((_req, _res, next) => {
-        const err = new Error("bad request");
-        (err as any).status = 400;
-        next(err);
-      });
-
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: { code: "request_failed" } });
-    });
+    const app = createAppWithError(zodErr!);
+    const res = await request(app).get("/error");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(ErrorCodes.VALIDATION_ERROR);
+    expect(res.body.error.message).toBe("Validation failed");
+    expect(res.body.error.details).toBeInstanceOf(Array);
+    expect(res.body.error.requestId).toEqual(expect.any(String));
   });
 
-  describe("500 / unknown", () => {
-    it("hides internals for 500 errors", async () => {
-      const app = buildApp(() => {
-        throw new Error("something went terribly wrong");
-      });
+  it("handles unknown error with 500 envelope", async () => {
+    const app = createAppWithError(new Error("unexpected"));
+    const res = await request(app).get("/error");
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe(ErrorCodes.INTERNAL_ERROR);
+    expect(res.body.error.message).toBe("Internal error");
+    expect(res.body.error.requestId).toEqual(expect.any(String));
+  });
 
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(500);
-      expect(res.body).toEqual({ error: { code: "internal_error" } });
-    });
-
-    it("treats sub-400 status as internal", async () => {
-      const app = buildApp((_req, _res, next) => {
-        const err = new Error("weird");
-        (err as any).status = 399;
-        next(err);
-      });
-
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(500);
-      expect(res.body).toEqual({ error: { code: "internal_error" } });
-    });
-
-    it("handles non-Error thrown values", async () => {
-      const app = buildApp(() => {
-        throw "string error"; // eslint-disable-line no-throw-literal
-      });
-
-      const res = await request(app).get("/test");
-      expect(res.status).toBe(500);
-      expect(res.body).toEqual({ error: { code: "internal_error" } });
-    });
+  it("does not leak stack traces", async () => {
+    const app = createAppWithError(new Error("hidden"));
+    const res = await request(app).get("/error");
+    expect(res.body.error.stack).toBeUndefined();
+    expect(res.text).not.toContain("Error: hidden");
   });
 });

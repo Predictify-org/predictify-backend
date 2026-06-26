@@ -1,7 +1,13 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
+import { AppError, ErrorCodes } from "../errors";
+
+function getRequestId(req: Request): string {
+  const id = (req as { id?: unknown }).id;
+  if (id == null) return "";
+  return String(id);
+}
 
 /*
  * Status → error code mapping:
@@ -14,22 +20,39 @@ import { getRequestId } from "../lib/requestContext";
  *   5xx / unknown   → 500  internal_error    (internals never leaked)
  */
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
-  // getRequestId() works here because the ALS middleware ran before us.
-  // Fall back to req.id (set by pinoHttp) in the unlikely event the store is
-  // not populated (e.g. the error was thrown before the ALS middleware ran).
-  const requestId = getRequestId() ?? (req.id as string | undefined);
+  const requestId = getRequestId(req);
 
-  logger.error(
-    { err, path: req.path, method: req.method, reqId: requestId },
-    "request_failed",
-  );
+  if (err instanceof AppError) {
+    logger.warn({ err, requestId, path: req.path, method: req.method }, err.message);
+    res.status(err.status).json({
+      error: {
+        code: err.code,
+        message: err.message,
+        ...(err.details ? { details: err.details } : {}),
+        requestId,
+      },
+    });
+    return;
+  }
 
-  const status = (err as { status?: number }).status ?? 500;
+  if (err instanceof ZodError) {
+    logger.warn({ err, requestId, path: req.path, method: req.method }, "validation_error");
+    res.status(400).json({
+      error: {
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: "Validation failed",
+        details: err.issues,
+        requestId,
+      },
+    });
+    return;
+  }
 
-  res.status(status).json({
+  logger.error({ err, requestId, path: req.path, method: req.method }, "unhandled_error");
+  res.status(500).json({
     error: {
-      code: status === 500 ? "internal_error" : "request_failed",
-      // Expose the request ID so clients can quote it when reporting issues.
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: "Internal error",
       requestId,
     },
   });
