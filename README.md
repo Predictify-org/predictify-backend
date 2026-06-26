@@ -20,23 +20,40 @@ This service indexes on-chain market state from the Predictify Soroban contract,
 ## Quick start
 
 ```bash
-cp .env.example .env   # fill JWT_SECRET, DATABASE_URL, contract id
+cp .env.example .env        # copy the template
+# Edit .env — set JWT_SECRET, DATABASE_URL, and PREDICTIFY_CONTRACT_ID
+# (all other keys have working testnet defaults)
+
 npm install
+npm run check-env           # validate .env before touching the DB
 npm run db:migrate
-npm run dev
+npm run dev                  # predev hook re-runs check-env automatically
 ```
 
-`DATABASE_URL` is required in development and production. The markets API reads from
-Postgres with Drizzle and returns active, non-archived rows from the `markets` table.
+`check-env` also runs automatically before `npm start` (production).  
+If a required variable is missing you get a readable bullet list instead of a stack trace:
 
-## Markets API
+```
+✖  Environment validation failed:
 
-```http
-GET /api/markets?limit=50&offset=0
+  • JWT_SECRET: String must contain at least 32 character(s)
+  • DATABASE_URL: Invalid url
+
+Copy .env.example → .env and set the values marked as required.
 ```
 
-`limit` is optional and capped at 100; `offset` defaults to 0. Responses contain
-ISO-8601 `resolutionTime` values.
+### Environment variables
+
+Every variable is documented in `.env.example` and validated by the zod schema in
+`src/config/env-schema.ts`.  Required variables (no default):
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Random secret ≥ 32 chars (`openssl rand -hex 32`) |
+| `SOROBAN_RPC_URL` | Soroban RPC endpoint |
+| `HORIZON_URL` | Horizon REST API endpoint |
+| `PREDICTIFY_CONTRACT_ID` | Deployed contract address (56-char Strkey) |
 
 ## Layout
 

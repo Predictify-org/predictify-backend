@@ -6,8 +6,11 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
+    "check-env": "ts-node --transpile-only scripts/check-env.ts",
+    "predev": "npm run check-env",
     "dev": "ts-node-dev --respawn src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run check-env",
     "start": "node dist/index.js",
     "indexer": "node dist/workers/indexer.js",
     "indexer:dev": "ts-node-dev --respawn --transpile-only src/workers/indexer.ts",

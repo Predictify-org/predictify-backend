@@ -1,19 +1,14 @@
-/**
- * Jest setup: provide the env vars that `src/config/env.ts` validates at import
- * time. Without this, simply importing the app throws a zod error (the starter's
- * own health test fails in a clean clone). Values are dummy/test-only.
- */
-process.env.NODE_ENV = "test";
-process.env.LOG_LEVEL = "silent";
-process.env.DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/predictify_test";
-process.env.JWT_SECRET =
-  process.env.JWT_SECRET ?? "test-jwt-secret-at-least-32-bytes-long-000000";
-process.env.JWT_ISSUER = process.env.JWT_ISSUER ?? "predictify";
-process.env.JWT_AUDIENCE = process.env.JWT_AUDIENCE ?? "predictify-app";
-process.env.WEBHOOK_SIGNING_SECRET =
-  process.env.WEBHOOK_SIGNING_SECRET ?? "test-webhook-signing-secret";
-process.env.SOROBAN_RPC_URL =
-  process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-process.env.HORIZON_URL = process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
-process.env.PREDICTIFY_CONTRACT_ID = process.env.PREDICTIFY_CONTRACT_ID ?? "CTEST";
+// Provide the minimum env vars needed for test suites that import src/config/env.ts.
+// Values are only applied when not already set (e.g. by a CI system).
+const defaults: Record<string, string> = {
+  NODE_ENV: "test",
+  DATABASE_URL: "postgres://user:pass@localhost:5432/predictify_test",
+  JWT_SECRET: "test-jwt-secret-that-is-at-least-32-characters-long",
+  SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
+  HORIZON_URL: "https://horizon-testnet.stellar.org",
+  PREDICTIFY_CONTRACT_ID: "CTEST_CONTRACT_ID",
+};
+
+for (const [key, value] of Object.entries(defaults)) {
+  if (!process.env[key]) process.env[key] = value;
+}

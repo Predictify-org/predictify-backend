@@ -14,7 +14,7 @@ module.exports = {
   // Run before every test file to populate required process.env variables.
   setupFiles: ["./tests/setup.ts"],
   testMatch: ["**/tests/**/*.test.ts"],
-  setupFiles: ["<rootDir>/tests/setupEnv.ts"],
+  setupFiles: ["./tests/setup.ts"],
   collectCoverageFrom: ["src/**/*.ts"],
   coverageDirectory: "coverage",
   setupFiles: ["<rootDir>/tests/env.setup.ts"],
