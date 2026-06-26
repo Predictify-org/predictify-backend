@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { listMarkets, getMarketById } from "../services/marketService";
-import { AppError } from "../errors";
+import { disputesRouter } from "./disputes";
 
 export const marketsRouter = Router();
 
@@ -12,7 +12,7 @@ const paginationQuerySchema = z.object({
 
 marketsRouter.get("/", async (req, res, next) => {
   try {
-    return res.json({ data: await listMarkets() });
+    res.json({ data: await listMarkets() });
   } catch (e) { return next(e); }
 });
 
@@ -23,3 +23,5 @@ marketsRouter.get("/:id", async (req, res, next) => {
     return res.json({ data: market });
   } catch (e) { return next(e); }
 });
+
+marketsRouter.use("/:id/disputes", disputesRouter);

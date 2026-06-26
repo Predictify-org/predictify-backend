@@ -8,8 +8,7 @@ import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
 import { adminUsersRouter } from "./routes/adminUsers";
 import { errorHandler } from "./middleware/errorHandler";
-import { metricsMiddleware } from "./metrics/httpMetrics";
-import { register } from "./metrics/registry";
+import { connectWithRetry, closeDb } from "./db/client";
 
 export interface AppDeps {
   /**
@@ -74,9 +73,28 @@ export function createApp(deps: AppDeps = {}): express.Express {
 
 if (require.main === module) {
   const app = createApp();
-  startIdempotencySweeper();
-  app.listen(env.PORT, () => {
-    logger.info({ port: env.PORT, env: env.NODE_ENV }, "predictify-backend listening");
+
+  connectWithRetry()
+    .then(() => {
+      app.listen(env.PORT, () => {
+        logger.info({ port: env.PORT, env: env.NODE_ENV }, "predictify-backend listening");
+      });
+    })
+    .catch((err) => {
+      logger.fatal({ err }, "Failed to start server");
+      process.exit(1);
+    });
+
+  process.on("SIGTERM", async () => {
+    logger.info("SIGTERM received, shutting down");
+    const forceExit = setTimeout(() => {
+      logger.warn("Forced exit after shutdown timeout");
+      process.exit(1);
+    }, 5000).unref();
+
+    await closeDb();
+    clearTimeout(forceExit);
+    process.exit(0);
   });
   
   // Graceful shutdown

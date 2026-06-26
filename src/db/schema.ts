@@ -117,46 +117,15 @@ export const claims = pgTable("claims", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Resolution disputes raised by users who disagree with an outcome
 export const disputes = pgTable("disputes", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id").notNull().references(() => users.id),
   marketId: text("market_id").notNull().references(() => markets.id),
+  openedBy: uuid("opened_by").notNull().references(() => users.id),
   reason: text("reason").notNull(),
-  // open | resolved | rejected
+  evidenceUri: text("evidence_uri"),
   status: text("status").notNull().default("open"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
-
-// Immutable record of every admin read/write on user data
-export const adminAuditLog = pgTable("admin_audit_log", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  adminAddress: text("admin_address").notNull(),
-  action: text("action").notNull(),
-  targetAddress: text("target_address").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-export const indexerEvents = pgTable(
-  "indexer_events",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    ledger: integer("ledger").notNull(),
-    txHash: text("tx_hash").notNull(),
-    opIndex: integer("op_index").notNull(),
-    eventType: text("event_type"),
-    payload: jsonb("payload"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    ledgerTxOpUnique: uniqueIndex("indexer_events_ledger_tx_op_idx").on(
-      table.ledger,
-      table.txHash,
-      table.opIndex,
-    ),
-    ledgerIdx: index("indexer_events_ledger_idx").on(table.ledger),
-  }),
-);
 
 export const indexerCursor = pgTable("indexer_cursor", {
   id: integer("id").primaryKey(),
