@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { logger } from "../config/logger";
+import { AppError } from "../errors";
 
 /*
  * Status → error code mapping:
@@ -20,17 +21,16 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     return;
   }
 
-  const typed = err as { status?: number; code?: string };
-  const status = typed.status ?? 500;
-
-  if (status >= 500 || status < 400) {
-    logger.error({ err, path: req.path, method: req.method }, "request_failed");
-    res.status(500).json({ error: { code: "internal_error" } });
+  if (err instanceof AppError) {
+    res.status(err.status).json({
+      error: { code: err.code },
+    });
     return;
   }
 
-  logger.warn({ err, path: req.path, method: req.method, status }, "request_failed");
-  res.status(status).json({
-    error: { code: typed.code ?? "request_failed" },
-  });
+  const errObj = err as { status?: number; code?: string };
+  logger.error({ err, path: req.path, method: req.method }, "request_failed");
+  const status = errObj.status ?? 500;
+  const code = errObj.code ?? (status === 500 ? "internal_error" : "request_failed");
+  res.status(status).json({ error: { code } });
 }

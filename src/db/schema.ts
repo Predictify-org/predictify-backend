@@ -1,4 +1,4 @@
-import { pgTable, serial, uuid, text, timestamp, integer, boolean, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, boolean, jsonb, unique } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -22,8 +22,12 @@ export const predictions = pgTable("predictions", {
   userId: uuid("user_id").notNull().references(() => users.id),
   outcome: text("outcome").notNull(),
   amount: text("amount").notNull(),
+  txHash: text("tx_hash").notNull(),
+  status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  uniqueUserMarketTx: unique().on(table.userId, table.marketId, table.txHash),
+}));
 
 export const indexerCursor = pgTable("indexer_cursor", {
   id: integer("id").primaryKey(),
