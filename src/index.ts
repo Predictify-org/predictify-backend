@@ -5,6 +5,7 @@ import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
+import { usersRouter } from "./routes/users";
 import { errorHandler } from "./middleware/errorHandler";
 
 export function createApp(): express.Express {
@@ -15,6 +16,7 @@ export function createApp(): express.Express {
 
   app.use("/health", healthRouter);
   app.use("/api/markets", marketsRouter);
+  app.use("/api/users", usersRouter);
 
   app.use(errorHandler);
   return app;
