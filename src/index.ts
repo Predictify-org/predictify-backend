@@ -6,7 +6,7 @@ import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
-import { createAdminWebhooksRouter, type AdminWebhookDeps } from "./routes/adminWebhooks";
+import { adminUsersRouter } from "./routes/adminUsers";
 import { errorHandler } from "./middleware/errorHandler";
 import { initializeScheduler, stopScheduler } from "./services/scheduler";
 
@@ -85,11 +85,7 @@ export function createApp(deps: AppDeps = {}): express.Express {
 
   app.use("/health", healthRouter);
   app.use("/api/markets", marketsRouter);
-  app.use("/api/leaderboard", leaderboardRouter);
-  app.use("/api/reconciliation", reconciliationRouter);
-
-  const webhooks = deps.webhooks ?? buildProductionWebhookDeps();
-  app.use("/api/admin/webhooks", createAdminWebhooksRouter(webhooks));
+  app.use("/api/admin/users", adminUsersRouter);
 
   app.use(errorHandler);
   return app;

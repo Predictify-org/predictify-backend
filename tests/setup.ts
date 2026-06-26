@@ -1,5 +1,5 @@
-// Provide the minimum env vars needed for test suites that import src/config/env.ts.
-// Values are only applied when not already set (e.g. by a CI system).
+// Seed the minimum env vars before any test module imports src/config/env.ts.
+// Only sets values not already present (CI can override via its own environment).
 const defaults: Record<string, string> = {
   NODE_ENV: "test",
   DATABASE_URL: "postgres://user:pass@localhost:5432/predictify_test",

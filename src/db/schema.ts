@@ -30,6 +30,37 @@ export const predictions = pgTable("predictions", {
   uniqueUserMarketTx: unique().on(table.userId, table.marketId, table.txHash),
 }));
 
+// Winnings claims submitted by users after a market resolves in their favour
+export const claims = pgTable("claims", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  marketId: text("market_id").notNull().references(() => markets.id),
+  amount: text("amount").notNull(),
+  // pending | paid | rejected
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Resolution disputes raised by users who disagree with an outcome
+export const disputes = pgTable("disputes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  marketId: text("market_id").notNull().references(() => markets.id),
+  reason: text("reason").notNull(),
+  // open | resolved | rejected
+  status: text("status").notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Immutable record of every admin read/write on user data
+export const adminAuditLog = pgTable("admin_audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  adminAddress: text("admin_address").notNull(),
+  action: text("action").notNull(),
+  targetAddress: text("target_address").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const indexerCursor = pgTable("indexer_cursor", {
   id: integer("id").primaryKey(),
   lastLedger: integer("last_ledger").notNull(),
@@ -37,31 +68,22 @@ export const indexerCursor = pgTable("indexer_cursor", {
 });
 
 // One row per on-chain Soroban event seen for the Predictify contract.
-// The unique index on (ledger, tx_hash, op_index) is the deduplication
-// key used for both normal re-ingestion and post-reorg re-ingest.
+// Unique index on (ledger, tx_hash, op_index) is the deduplication key.
 export const indexerEvents = pgTable(
   "indexer_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    // RPC paging cursor – kept for debugging / re-play queries
     eventId: text("event_id").notNull(),
     ledger: integer("ledger").notNull(),
     txHash: text("tx_hash").notNull(),
-    // Position of the event within the transaction
     opIndex: integer("op_index").notNull(),
     contractId: text("contract_id").notNull(),
-    // XDR-encoded topic segments stored as a JSON array of base64 strings
     topicXdr: jsonb("topic_xdr").notNull().$type<string[]>(),
-    // XDR-encoded event value (base64)
     valueXdr: text("value_xdr").notNull(),
     ledgerClosedAt: timestamp("ledger_closed_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    eventKey: uniqueIndex("indexer_events_ledger_tx_op_idx").on(
-      t.ledger,
-      t.txHash,
-      t.opIndex,
-    ),
+    eventKey: uniqueIndex("indexer_events_ledger_tx_op_idx").on(t.ledger, t.txHash, t.opIndex),
   }),
 );
