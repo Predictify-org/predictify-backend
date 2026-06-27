@@ -6,29 +6,28 @@ import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { metricsMiddleware } from "./metrics/httpMetrics";
 import { idempotency } from "./middleware/idempotency";
-import { healthRouter } from "./routes/health";
-import { authRouter } from "./routes/auth";
-import { marketsRouter } from "./routes/markets";
-import { usersRouter } from "./routes/users";
-import { authRouter } from "./routes/auth";
-import { leaderboardRouter } from "./routes/leaderboard";
-import { createDocsRouter } from "./routes/docs";
-import { metricsMiddleware } from "./metrics/httpMetrics";
-import { idempotency } from "./middleware/idempotency";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestContextStorage } from "./lib/requestContext";
 import { REQUEST_ID_HEADER } from "./lib/http";
 import { register } from "./metrics/registry";
 import { connectWithRetry, closeDb } from "./db/client";
 import { stopScheduler } from "./services/scheduler";
+import { healthRouter } from "./routes/health";
+import { authRouter } from "./routes/auth";
+import { marketsRouter } from "./routes/markets";
+import { usersRouter } from "./routes/users";
+import { leaderboardRouter } from "./routes/leaderboard";
+import { createDocsRouter } from "./routes/docs";
+import { adminUsersRouter } from "./routes/adminUsers";
+import { adminReconciliationRouter } from "./routes/admin/reconciliation";
 
 const REQUEST_ID_MAX_LENGTH = 64;
 
 function sanitizeRequestId(raw: string): string | undefined {
-  const sanitised = raw
+  const sanitized = raw
     .slice(0, REQUEST_ID_MAX_LENGTH)
     .replace(/[^A-Za-z0-9\-_.]/g, "");
-  return sanitised.length > 0 ? sanitised : undefined;
+  return sanitized.length > 0 ? sanitized : undefined;
 }
 
 export function createApp(): express.Express {
@@ -38,12 +37,7 @@ export function createApp(): express.Express {
     app.set("trust proxy", true);
   }
 
-  // ── Swagger UI docs (scoped relaxed CSP) ──────────────────────────────
-  // Must be mounted BEFORE the global helmet() so /docs receives its own
-  // relaxed Content-Security-Policy. See docs/security.md.
   app.use("/docs", createDocsRouter());
-
-  // ── Global strict CSP (everything except /docs) ───────────────────────
   app.use(helmet());
   app.use(express.json({ limit: "256kb" }));
 
@@ -56,19 +50,24 @@ export function createApp(): express.Express {
         return (raw && sanitizeRequestId(raw)) ?? uuidv4();
       },
       customProps(req) {
-        return { reqId: req.id };
+        return { reqId: (req as { id?: string }).id };
       },
     }),
   );
 
-  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const requestId = req.id as string;
-    res.setHeader(REQUEST_ID_HEADER, requestId);
-    requestContextStorage.run({ requestId }, next);
-  });
+  app.use(
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      const requestId = String((req as { id?: string }).id ?? uuidv4());
+      res.setHeader(REQUEST_ID_HEADER, requestId);
+      requestContextStorage.run({ requestId }, next);
+    },
+  );
 
   app.use(metricsMiddleware);
-
   app.use("/health", healthRouter);
 
   const mutationMethods = ["POST", "PATCH"] as const;
@@ -78,18 +77,23 @@ export function createApp(): express.Express {
       : next(),
   );
 
-
   app.use("/api/auth", authRouter);
   app.use("/api/markets", marketsRouter);
   app.use("/api/leaderboard", leaderboardRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/admin/users", adminUsersRouter);
+  app.use("/api/admin/recon", adminReconciliationRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
-    if (metricsAuthToken && req.headers.authorization !== `Bearer ${metricsAuthToken}`) {
+    if (
+      metricsAuthToken &&
+      req.headers.authorization !== `Bearer ${metricsAuthToken}`
+    ) {
       res.status(401).send("Unauthorized");
       return;
     }
+
     res.set("Content-Type", register.contentType);
     res.send(await register.metrics());
   });
@@ -104,10 +108,11 @@ if (require.main === module) {
   connectWithRetry()
     .then(() => {
       app.listen(env.PORT, () => {
-        logger.info({ port: env.PORT, env: env.NODE_ENV }, "predictify-backend listening");
-        if (docsEnabled) {
-          logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
-        }
+        logger.info(
+          { port: env.PORT, env: env.NODE_ENV },
+          "predictify-backend listening",
+        );
+        logger.info({ port: env.PORT }, "Swagger UI available at /docs");
       });
     })
     .catch((err) => {

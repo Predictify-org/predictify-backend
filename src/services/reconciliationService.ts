@@ -1,222 +1,374 @@
-import { db } from "../db";
-import { predictions, users, reconciliationReports } from "../db/schema";
-import { eq, desc } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { db } from "../db/client";
 import { logger } from "../config/logger";
-import { v4 as uuidv4 } from "uuid";
+import { markets, predictions, users } from "../db/schema";
+import { createAuditLog } from "./auditService";
 
-export interface Discrepancy {
-  predictionId: string;
+export interface ReconciliationSidePosition {
   stellarAddress: string;
-  marketId: string;
+  outcome: string;
+  amount: string;
+}
+
+export interface ReconciliationDiffEntry {
+  key: {
+    stellarAddress: string;
+    outcome: string;
+  };
   dbAmount: string;
-  onChainAmount: string;
-  difference: string;
+  onChainAmount: string | null;
+  difference: string | null;
+  status: "match" | "mismatch" | "missing_on_chain" | "missing_in_db";
 }
 
-export interface ReconciliationResult {
-  reportId: string;
-  totalPredictions: number;
-  matchedPredictions: number;
-  unmatchedPredictions: number;
-  discrepancies: Discrepancy[];
+export interface ReconciliationSummary {
+  totalKeys: number;
+  matches: number;
+  mismatches: number;
+  missingOnChain: number;
+  missingInDb: number;
 }
 
-/**
- * Fetch on-chain prediction balance for a user in a specific market
- * This queries the Soroban contract for the user's position
- * 
- * NOTE: This is a placeholder implementation. The actual contract method name
- * and parameter encoding will depend on the Predictify Soroban contract interface.
- * You'll need to update this based on the actual contract ABI.
- */
-async function getOnChainPredictionBalance(
-  stellarAddress: string,
-  marketId: string
-): Promise<bigint | null> {
-  try {
-    // TODO: Implement actual contract call based on Predictify contract ABI
-    // This will require:
-    // 1. The correct contract method name (e.g., "balance", "get_position", etc.)
-    // 2. Proper parameter encoding using xdr.ScVal
-    // 3. Parsing the response using xdr.ScVal.fromXDR()
-    
-    // Placeholder: Return null to indicate on-chain data not available
-    // Once contract interface is known, replace with actual implementation
-    logger.warn(
-      { stellarAddress, marketId },
-      "On-chain balance fetching not yet implemented - contract ABI needed"
-    );
-    
-    return null;
-  } catch (error) {
-    logger.error({ error, stellarAddress, marketId }, "Failed to fetch on-chain balance");
-    return null;
+export interface MarketReconciliationResult {
+  marketId: string;
+  correlationId: string;
+  generatedAt: string;
+  status: "ok" | "partial";
+  dbSnapshot: {
+    positions: ReconciliationSidePosition[];
+    totalAmount: string;
+  };
+  onChainSnapshot: {
+    positions: ReconciliationSidePosition[];
+    totalAmount: string;
+    available: boolean;
+    source: string;
+    unavailableReason: string | null;
+  };
+  summary: ReconciliationSummary;
+  diffs: ReconciliationDiffEntry[];
+}
+
+export class ReconciliationNotFoundError extends Error {
+  status = 404;
+  code = "not_found";
+
+  constructor(marketId: string) {
+    super(`Market not found: ${marketId}`);
+    this.name = "ReconciliationNotFoundError";
   }
 }
 
-/**
- * Perform reconciliation between database predictions and on-chain balances
- */
-export async function performReconciliation(): Promise<ReconciliationResult> {
-  logger.info("Starting reconciliation process");
-  
-  const reportId = uuidv4();
-  const discrepancies: Discrepancy[] = [];
-  let matchedCount = 0;
-  let unmatchedCount = 0;
-  const batchSize = 10; // Process 10 predictions in parallel
-  
-  // Start the report
-  await db.insert(reconciliationReports).values({
-    id: reportId,
-    status: "in_progress",
-    totalPredictions: 0,
-    matchedPredictions: 0,
-    unmatchedPredictions: 0,
-    discrepancies: [],
-  });
-  
-  try {
-    // Fetch all predictions with user and market info
-    const allPredictions = await db
-      .select({
-        id: predictions.id,
-        amount: predictions.amount,
-        userId: predictions.userId,
-        marketId: predictions.marketId,
-        stellarAddress: users.stellarAddress,
-      })
-      .from(predictions)
-      .innerJoin(users, eq(predictions.userId, users.id));
-    
-    logger.info({ total: allPredictions.length }, "Processing predictions for reconciliation");
-    
-    // Process predictions in batches for better performance
-    for (let i = 0; i < allPredictions.length; i += batchSize) {
-      const batch = allPredictions.slice(i, i + batchSize);
-      
-      const results = await Promise.all(
-        batch.map(async (prediction) => {
-          const onChainBalance = await getOnChainPredictionBalance(
-            prediction.stellarAddress,
-            prediction.marketId
-          );
-          
-          if (onChainBalance === null) {
-            logger.warn(
-              { predictionId: prediction.id, stellarAddress: prediction.stellarAddress },
-              "Failed to fetch on-chain balance, skipping"
-            );
-            return null;
-          }
-          
-          const dbAmount = BigInt(prediction.amount);
-          
-          if (dbAmount === onChainBalance) {
-            matchedCount++;
-            return null;
-          } else {
-            unmatchedCount++;
-            return {
-              predictionId: prediction.id,
-              stellarAddress: prediction.stellarAddress,
-              marketId: prediction.marketId,
-              dbAmount: prediction.amount,
-              onChainAmount: onChainBalance.toString(),
-              difference: (dbAmount - onChainBalance).toString(),
-            };
-          }
-        })
-      );
-      
-      // Add non-null results to discrepancies
-      for (const result of results) {
-        if (result) {
-          discrepancies.push(result);
-        }
+export interface OnChainMarketStateProvider {
+  getMarketPositions(marketId: string): Promise<{
+    positions: ReconciliationSidePosition[];
+    source: string;
+    available: boolean;
+    unavailableReason?: string;
+  }>;
+}
+
+export interface ReconciliationServiceDeps {
+  marketExists(marketId: string): Promise<boolean>;
+  getDbPositions(marketId: string): Promise<ReconciliationSidePosition[]>;
+  getOnChainPositions(marketId: string): Promise<{
+    positions: ReconciliationSidePosition[];
+    source: string;
+    available: boolean;
+    unavailableReason?: string;
+  }>;
+  writeAudit(input: {
+    action: string;
+    walletAddress?: string;
+    ip: string;
+    correlationId: string;
+  }): Promise<string>;
+}
+
+function normaliseAmount(value: string): bigint {
+  return BigInt(value);
+}
+
+function sumAmounts(positions: ReconciliationSidePosition[]): string {
+  return positions
+    .reduce<bigint>(
+      (total, position) => total + normaliseAmount(position.amount),
+      0n,
+    )
+    .toString();
+}
+
+function positionKey(position: {
+  stellarAddress: string;
+  outcome: string;
+}): string {
+  return `${position.stellarAddress}::${position.outcome}`;
+}
+
+function aggregatePositions(
+  rows: Array<{ stellarAddress: string; outcome: string; amount: string }>,
+): ReconciliationSidePosition[] {
+  const grouped = new Map<string, bigint>();
+
+  for (const row of rows) {
+    const key = positionKey(row);
+    grouped.set(key, (grouped.get(key) ?? 0n) + normaliseAmount(row.amount));
+  }
+
+  return [...grouped.entries()]
+    .map(([key, amount]) => {
+      const [stellarAddress, outcome] = key.split("::");
+      return { stellarAddress, outcome, amount: amount.toString() };
+    })
+    .sort((a, b) => {
+      const byAddress = a.stellarAddress.localeCompare(b.stellarAddress);
+      if (byAddress !== 0) return byAddress;
+      return a.outcome.localeCompare(b.outcome);
+    });
+}
+
+export function diffMarketPositions(
+  dbPositions: ReconciliationSidePosition[],
+  onChainPositions: ReconciliationSidePosition[],
+): { summary: ReconciliationSummary; diffs: ReconciliationDiffEntry[] } {
+  const dbMap = new Map(
+    dbPositions.map((position) => [positionKey(position), position]),
+  );
+  const onChainMap = new Map(
+    onChainPositions.map((position) => [positionKey(position), position]),
+  );
+  const keys = [...new Set([...dbMap.keys(), ...onChainMap.keys()])].sort();
+
+  const diffs = keys.map<ReconciliationDiffEntry>((key) => {
+    const dbPosition = dbMap.get(key) ?? null;
+    const onChainPosition = onChainMap.get(key) ?? null;
+    const [stellarAddress, outcome] = key.split("::");
+
+    if (dbPosition && onChainPosition) {
+      const dbAmount = normaliseAmount(dbPosition.amount);
+      const onChainAmount = normaliseAmount(onChainPosition.amount);
+
+      if (dbAmount === onChainAmount) {
+        return {
+          key: { stellarAddress, outcome },
+          dbAmount: dbPosition.amount,
+          onChainAmount: onChainPosition.amount,
+          difference: "0",
+          status: "match",
+        };
       }
-    }
-    
-    // Update the report with results
-    await db
-      .update(reconciliationReports)
-      .set({
-        completedAt: new Date(),
-        status: "completed",
-        totalPredictions: allPredictions.length,
-        matchedPredictions: matchedCount,
-        unmatchedPredictions: unmatchedCount,
-        discrepancies: discrepancies,
-      })
-      .where(eq(reconciliationReports.id, reportId));
-    
-    logger.info(
-      {
-        reportId,
-        total: allPredictions.length,
-        matched: matchedCount,
-        unmatched: unmatchedCount,
-      },
-      "Reconciliation completed"
-    );
-    
-    return {
-      reportId,
-      totalPredictions: allPredictions.length,
-      matchedPredictions: matchedCount,
-      unmatchedPredictions: unmatchedCount,
-      discrepancies,
-    };
-  } catch (error) {
-    // Mark report as failed
-    await db
-      .update(reconciliationReports)
-      .set({
-        completedAt: new Date(),
-        status: "failed",
-        totalPredictions: 0,
-        matchedPredictions: 0,
-        unmatchedPredictions: 0,
-        discrepancies: [],
-      })
-      .where(eq(reconciliationReports.id, reportId));
-    
-    logger.error({ error, reportId }, "Reconciliation failed");
-    throw error;
-  }
-}
 
-/**
- * Get reconciliation report by ID
- */
-export async function getReconciliationReport(
-  reportId: string
-): Promise<ReconciliationResult | null> {
-  const report = await db
-    .select()
-    .from(reconciliationReports)
-    .where(eq(reconciliationReports.id, reportId))
-    .limit(1);
-  
-  if (!report[0]) return null;
-  
+      return {
+        key: { stellarAddress, outcome },
+        dbAmount: dbPosition.amount,
+        onChainAmount: onChainPosition.amount,
+        difference: (dbAmount - onChainAmount).toString(),
+        status: "mismatch",
+      };
+    }
+
+    if (dbPosition) {
+      return {
+        key: { stellarAddress, outcome },
+        dbAmount: dbPosition.amount,
+        onChainAmount: null,
+        difference: null,
+        status: "missing_on_chain",
+      };
+    }
+
+    return {
+      key: { stellarAddress, outcome },
+      dbAmount: "0",
+      onChainAmount: onChainPosition!.amount,
+      difference: null,
+      status: "missing_in_db",
+    };
+  });
+
   return {
-    reportId: report[0].id,
-    totalPredictions: report[0].totalPredictions,
-    matchedPredictions: report[0].matchedPredictions,
-    unmatchedPredictions: report[0].unmatchedPredictions,
-    discrepancies: report[0].discrepancies as Discrepancy[],
+    summary: {
+      totalKeys: diffs.length,
+      matches: diffs.filter((entry) => entry.status === "match").length,
+      mismatches: diffs.filter((entry) => entry.status === "mismatch").length,
+      missingOnChain: diffs.filter(
+        (entry) => entry.status === "missing_on_chain",
+      ).length,
+      missingInDb: diffs.filter((entry) => entry.status === "missing_in_db")
+        .length,
+    },
+    diffs,
   };
 }
 
-/**
- * Get recent reconciliation reports
- */
-export async function listReconciliationReports(limit: number = 10, offset: number = 0) {
-  return db
-    .select()
-    .from(reconciliationReports)
-    .orderBy(desc(reconciliationReports.startedAt))
-    .limit(limit)
-    .offset(offset);
+export class DefaultOnChainMarketStateProvider implements OnChainMarketStateProvider {
+  async getMarketPositions(_marketId: string): Promise<{
+    positions: ReconciliationSidePosition[];
+    source: string;
+    available: boolean;
+    unavailableReason?: string;
+  }> {
+    return {
+      positions: [],
+      source: "soroban-rpc",
+      available: false,
+      unavailableReason:
+        "On-chain market position lookup is not configured for this deployment yet. Wire the contract read adapter before relying on this endpoint for live balances.",
+    };
+  }
+}
+
+export function createReconciliationService(deps: ReconciliationServiceDeps) {
+  return {
+    async reconcileMarket(input: {
+      marketId: string;
+      adminAddress: string;
+      ip: string;
+      correlationId: string;
+    }): Promise<MarketReconciliationResult> {
+      const exists = await deps.marketExists(input.marketId);
+      if (!exists) {
+        throw new ReconciliationNotFoundError(input.marketId);
+      }
+
+      logger.info(
+        {
+          correlationId: input.correlationId,
+          marketId: input.marketId,
+          adminAddress: input.adminAddress,
+        },
+        "admin_market_reconciliation_started",
+      );
+
+      const [dbPositions, onChain] = await Promise.all([
+        deps.getDbPositions(input.marketId),
+        deps.getOnChainPositions(input.marketId),
+      ]);
+
+      const { summary, diffs } = diffMarketPositions(
+        dbPositions,
+        onChain.positions,
+      );
+
+      await deps.writeAudit({
+        action: "admin.reconciliation.market.inspect",
+        walletAddress: input.adminAddress,
+        ip: input.ip,
+        correlationId: input.correlationId,
+      });
+
+      const result: MarketReconciliationResult = {
+        marketId: input.marketId,
+        correlationId: input.correlationId,
+        generatedAt: new Date().toISOString(),
+        status: onChain.available ? "ok" : "partial",
+        dbSnapshot: {
+          positions: dbPositions,
+          totalAmount: sumAmounts(dbPositions),
+        },
+        onChainSnapshot: {
+          positions: onChain.positions,
+          totalAmount: sumAmounts(onChain.positions),
+          available: onChain.available,
+          source: onChain.source,
+          unavailableReason: onChain.unavailableReason ?? null,
+        },
+        summary,
+        diffs,
+      };
+
+      logger.info(
+        {
+          correlationId: input.correlationId,
+          marketId: input.marketId,
+          adminAddress: input.adminAddress,
+          status: result.status,
+          summary: result.summary,
+        },
+        "admin_market_reconciliation_completed",
+      );
+
+      return result;
+    },
+  };
+}
+
+const defaultOnChainProvider = new DefaultOnChainMarketStateProvider();
+
+async function marketExists(marketId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: markets.id })
+    .from(markets)
+    .where(eq(markets.id, marketId))
+    .limit(1);
+
+  return rows.length > 0;
+}
+
+async function getDbPositions(
+  marketId: string,
+): Promise<ReconciliationSidePosition[]> {
+  const rows = await db
+    .select({
+      stellarAddress: users.stellarAddress,
+      outcome: predictions.outcome,
+      amount: predictions.amount,
+    })
+    .from(predictions)
+    .innerJoin(users, eq(predictions.userId, users.id))
+    .where(
+      and(
+        eq(predictions.marketId, marketId),
+        eq(predictions.status, "confirmed"),
+      ),
+    );
+
+  return aggregatePositions(rows);
+}
+
+async function getOnChainPositions(marketId: string) {
+  const result = await defaultOnChainProvider.getMarketPositions(marketId);
+  return {
+    positions: aggregatePositions(result.positions),
+    source: result.source,
+    available: result.available,
+    unavailableReason: result.unavailableReason,
+  };
+}
+
+export const reconciliationService = createReconciliationService({
+  marketExists,
+  getDbPositions,
+  getOnChainPositions,
+  writeAudit: createAuditLog,
+});
+
+export async function reconcileMarket(input: {
+  marketId: string;
+  adminAddress: string;
+  ip: string;
+  correlationId: string;
+}): Promise<MarketReconciliationResult> {
+  return reconciliationService.reconcileMarket(input);
+}
+
+export async function performReconciliation(): Promise<{
+  skipped: true;
+  reason: string;
+}> {
+  logger.info(
+    "Global reconciliation run skipped; use admin market reconciliation instead",
+  );
+  return {
+    skipped: true,
+    reason: "Use GET /api/admin/recon/markets/:id for targeted reconciliation.",
+  };
+}
+
+export async function getReconciliationReport(): Promise<null> {
+  return null;
+}
+
+export async function listReconciliationReports(): Promise<[]> {
+  return [];
 }
