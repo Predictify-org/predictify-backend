@@ -6,16 +6,19 @@ import { logger } from "./config/logger";
 import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
 import { usersRouter } from "./routes/users";
-import { authRouter } from "./routes/auth";
-import { metricsMiddleware } from "./metrics/httpMetrics";
-import { idempotency } from "./middleware/idempotency";
-import { stopScheduler } from "./services/scheduler";
+import { createDocsRouter } from "./routes/docs";
 import { errorHandler } from "./middleware/errorHandler";
 import { connectWithRetry, closeDb } from "./db/client";
 
 export function createApp(): express.Express {
   const app = express();
 
+  // ── Swagger UI docs (scoped relaxed CSP) ──────────────────────────────
+  // Must be mounted BEFORE the global helmet() so /docs receives its own
+  // relaxed Content-Security-Policy. See docs/security.md.
+  app.use("/docs", createDocsRouter());
+
+  // ── Global strict CSP (everything except /docs) ───────────────────────
   app.use(helmet());
   app.use(express.json({ limit: "256kb" }));
   app.use(pinoHttp({ logger }));
