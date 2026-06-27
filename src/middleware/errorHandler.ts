@@ -1,13 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { ZodError } from "zod";
 import { logger } from "../config/logger";
-import { AppError, ErrorCodes } from "../errors";
-
-function getRequestId(req: Request): string {
-  const id = (req as { id?: unknown }).id;
-  if (id == null) return "";
-  return String(id);
-}
 
 /*
  * Status → error code mapping:
