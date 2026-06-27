@@ -12,9 +12,9 @@ blocks inline scripts, inline styles, and untrusted origins.
 app.use(helmet());
 ```
 
-Helmet's default CSP sets `script-src 'self'` (among other directives), which
-prevents Cross-Site Scripting (XSS) attacks by disallowing inline `<script>`
-tags and scripts loaded from external origins.
+The global CSP sets `script-src 'self'` and `style-src 'self' https:` (among
+other directives), which prevents inline scripts and inline styles outside the
+explicit `/docs` exception.
 
 **This global CSP must not be weakened.**
 
@@ -25,21 +25,21 @@ These are blocked by the strict global CSP, causing the docs page to fail.
 
 ### Solution
 
-A **scoped** helmet middleware is mounted **only** on the `/docs` route,
-**before** the global `helmet()` call. This ensures:
+A **scoped** CSP middleware is mounted **only** on the `/docs` route,
+**before** the global Helmet middleware. This ensures:
 
 | Route          | CSP behaviour                                          |
 |----------------|--------------------------------------------------------|
-| `/docs`        | Relaxed — allows `'unsafe-inline'` for scripts/styles  |
-| Everything else| Strict — helmet defaults (no inline scripts/styles)    |
+| `/docs`        | Relaxed — allows Swagger UI inline assets and Swagger CDN |
+| Everything else| Strict — Helmet defaults (no inline scripts/styles)       |
 
 ### Relaxed directives (scoped to `/docs`)
 
 ```
 Content-Security-Policy:
   default-src 'self';
-  script-src  'self' 'unsafe-inline';
-  style-src   'self' 'unsafe-inline';
+  script-src  'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src   'self' 'unsafe-inline' https://cdn.jsdelivr.net;
   img-src     'self' data: https://validator.swagger.io;
   connect-src 'self';
 ```
@@ -61,11 +61,13 @@ The risk is mitigated by:
 
 ### Implementation reference
 
+- **Middleware**: [`src/middleware/csp.ts`](../src/middleware/csp.ts)
 - **Route definition**: [`src/routes/docs.ts`](../src/routes/docs.ts)
 - **Mount point**: [`src/index.ts`](../src/index.ts) — `/docs` is mounted
-  before `helmet()` so it receives its own scoped CSP.
+  before the global Helmet middleware so it receives its own scoped CSP.
 - **Test**: [`tests/csp.test.ts`](../tests/csp.test.ts) — asserts the CSP
-  header differs between `/docs` and other API routes.
+  header differs between `/docs` and other routes and that the Swagger CDN is
+  only allowed on `/docs`.
 
 ## Verification
 
@@ -76,5 +78,7 @@ npm test -- --testPathPattern=csp
 The test suite verifies:
 
 - `/docs` CSP contains `'unsafe-inline'`
-- `/health` (and by extension all `/api/*`) CSP does **not** contain `'unsafe-inline'`
+- `/docs` CSP allows `https://cdn.jsdelivr.net`
+- `/health` (and by extension all `/api/*`) does **not** allow `'unsafe-inline'`
+- `/health` does **not** allow the Swagger CDN
 - The CSP header values for `/docs` and `/health` are not equal

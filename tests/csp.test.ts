@@ -4,18 +4,40 @@ process.env.SOROBAN_RPC_URL = "https://testnet.stellar.org";
 process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
 process.env.PREDICTIFY_CONTRACT_ID = "test-contract-id";
 
+import express from "express";
 import request from "supertest";
-import { createApp } from "../src/index";
+import {
+  createDocsCspMiddleware,
+  createGlobalCspMiddleware,
+} from "../src/middleware/csp";
+import { createDocsRouter } from "../src/routes/docs";
+import { healthRouter } from "../src/routes/health";
 
-const app = createApp();
+function makeApp() {
+  const app = express();
+  app.use("/docs", createDocsCspMiddleware(), createDocsRouter());
+  app.use(createGlobalCspMiddleware());
+  app.use("/health", healthRouter);
+  return app;
+}
 
 describe("CSP header scoping", () => {
+  const app = makeApp();
+
   describe("GET /docs", () => {
-    it("returns a Content-Security-Policy that allows 'unsafe-inline' scripts", async () => {
+    it("returns a Content-Security-Policy that allows Swagger UI inline assets", async () => {
       const res = await request(app).get("/docs/").redirects(5);
       const csp = res.headers["content-security-policy"];
       expect(csp).toBeDefined();
+      expect(csp).toContain("script-src");
+      expect(csp).toContain("style-src");
       expect(csp).toContain("'unsafe-inline'");
+    });
+
+    it("allows the Swagger CDN on the docs route only", async () => {
+      const res = await request(app).get("/docs/").redirects(5);
+      const csp = res.headers["content-security-policy"];
+      expect(csp).toContain("https://cdn.jsdelivr.net");
     });
 
     it("loads Swagger UI HTML successfully", async () => {
@@ -26,16 +48,16 @@ describe("CSP header scoping", () => {
   });
 
   describe("GET /health (global CSP)", () => {
-    it("returns a strict CSP that does NOT allow 'unsafe-inline' scripts", async () => {
+    it("returns a strict CSP that does NOT allow inline or Swagger CDN scripts", async () => {
       const res = await request(app).get("/health");
       const csp = res.headers["content-security-policy"];
       expect(csp).toBeDefined();
-      // Global helmet default CSP should not contain 'unsafe-inline' for scripts
       expect(csp).not.toContain("'unsafe-inline'");
+      expect(csp).not.toContain("https://cdn.jsdelivr.net");
     });
   });
 
-  describe("/docs vs /api CSP differ", () => {
+  describe("/docs vs /health CSP differ", () => {
     it("has different CSP header values for /docs and /health", async () => {
       const [docsRes, healthRes] = await Promise.all([
         request(app).get("/docs/").redirects(5),
