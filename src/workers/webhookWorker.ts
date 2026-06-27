@@ -1,34 +1,15 @@
-/**
- * webhookWorker.ts
- *
- * Background polling worker that picks up pending/failed webhook deliveries
- * whose `nextRetryAt` timestamp has elapsed and drives them through
- * `attemptDelivery`.
- *
- * Usage
- * ─────
- *   import { WebhookWorker } from "./workers/webhookWorker";
- *
- *   const worker = new WebhookWorker(db, { intervalMs: 10_000, concurrency: 10 });
- *   worker.start();
- *   // ...later, on graceful shutdown:
- *   await worker.stop();
- *
- * The worker processes up to `concurrency` deliveries per tick with
- * Promise.allSettled so a slow subscriber never starves others.
- */
-
+import { Worker, Job } from "bullmq";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { webhookDeliveries, webhookSubscriptions } from "../db/schema";
 import { attemptDelivery, getOverdueDeliveries } from "../services/webhookDispatcher";
 import { logger } from "../config/logger";
+import { redisConnection, webhookQueueName, webhookQueue } from "../queue";
 
-// Re-export so external code can import from the worker module only.
 export { getOverdueDeliveries };
 
 export interface WorkerOptions {
-  /** Polling interval in milliseconds (default: 10 000). */
+  /** Polling interval in milliseconds (default: 10 000). Ignored in BullMQ version. */
   intervalMs?: number;
   /** Maximum parallel deliveries per tick (default: 10). */
   concurrency?: number;
@@ -36,73 +17,48 @@ export interface WorkerOptions {
 
 export class WebhookWorker {
   private readonly db: NodePgDatabase;
-  private readonly intervalMs: number;
   private readonly concurrency: number;
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  private running = false;
-  /** Tracks the active processing tick so stop() can await it. */
-  private tickPromise: Promise<void> = Promise.resolve();
+  private worker: Worker | null = null;
 
   constructor(db: NodePgDatabase, opts: WorkerOptions = {}) {
     this.db = db;
-    this.intervalMs = opts.intervalMs ?? 10_000;
     this.concurrency = opts.concurrency ?? 10;
   }
 
-  /** Start the polling loop. Safe to call multiple times (no-op if running). */
+  /** Start the BullMQ worker. */
   start(): void {
-    if (this.running) return;
-    this.running = true;
-    logger.info({ intervalMs: this.intervalMs, concurrency: this.concurrency }, "webhook.worker.start");
-    this.schedule();
-  }
+    if (this.worker) return;
 
-  /** Stop the polling loop and wait for the current tick to finish. */
-  async stop(): Promise<void> {
-    this.running = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    await this.tickPromise;
-    logger.info("webhook.worker.stop");
-  }
+    logger.info({ concurrency: this.concurrency }, "webhook.worker.start");
 
-  // --------------------------------------------------------------------------
-  // Internal
-  // --------------------------------------------------------------------------
+    this.worker = new Worker(
+      webhookQueueName,
+      async (job: Job) => {
+        const { deliveryId } = job.data;
 
-  private schedule(): void {
-    if (!this.running) return;
-    this.timer = setTimeout(() => {
-      this.tickPromise = this.tick().catch((err) => {
-        logger.error({ err }, "webhook.worker.tick.error");
-      });
-      this.tickPromise.finally(() => this.schedule());
-    }, this.intervalMs);
-  }
+        // Fetch the delivery from DB
+        const [delivery] = await this.db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, deliveryId));
 
-  /**
-   * One polling tick: fetch overdue deliveries, look up subscription secrets,
-   * and attempt each delivery concurrently (capped at `concurrency`).
-   */
-  private async tick(): Promise<void> {
-    const deliveries = await getOverdueDeliveries(this.db, this.concurrency);
-    if (deliveries.length === 0) return;
+        if (!delivery) {
+          logger.warn({ deliveryId }, "webhook.worker.delivery_not_found");
+          return;
+        }
 
-    logger.debug({ count: deliveries.length }, "webhook.worker.tick");
+        // If it was already completed or terminal, skip
+        if (delivery.status === "success" || delivery.status === "terminal") {
+          return;
+        }
 
-    await Promise.allSettled(
-      deliveries.map(async (delivery) => {
-        // Look up the subscription to get the url and secret.
         const [sub] = await this.db
           .select()
           .from(webhookSubscriptions)
           .where(eq(webhookSubscriptions.id, delivery.subscriptionId));
 
         if (!sub) {
-          logger.warn({ deliveryId: delivery.id }, "webhook.worker.subscription_not_found");
-          // Mark as terminal so the worker doesn't keep retrying forever.
+          logger.warn({ deliveryId }, "webhook.worker.subscription_not_found");
           await this.db
             .update(webhookDeliveries)
             .set({ status: "terminal", updatedAt: new Date() })
@@ -112,7 +68,7 @@ export class WebhookWorker {
 
         const rawBody = Buffer.from(JSON.stringify(delivery.payload), "utf8");
 
-        await attemptDelivery(
+        const result = await attemptDelivery(
           this.db,
           delivery.id,
           sub.url,
@@ -120,7 +76,40 @@ export class WebhookWorker {
           rawBody,
           delivery.eventType,
         );
-      }),
+
+        if (!result.success) {
+          // Check next state to schedule retry
+          const [updated] = await this.db
+            .select()
+            .from(webhookDeliveries)
+            .where(eq(webhookDeliveries.id, delivery.id));
+
+          if (updated && updated.status === "failed") {
+            const delay = Math.max(0, updated.nextRetryAt.getTime() - Date.now());
+            await webhookQueue.add("deliver", { deliveryId: delivery.id }, { delay });
+          }
+
+          throw new Error(result.error || "Delivery failed");
+        }
+      },
+      { 
+        // @ts-expect-error IORedis types conflict with BullMQ
+        connection: redisConnection, 
+        concurrency: this.concurrency 
+      }
     );
+
+    this.worker.on("failed", (job, err) => {
+      logger.error({ deliveryId: job?.data.deliveryId, err: err.message }, "webhook.worker.job_failed");
+    });
+  }
+
+  /** Stop the BullMQ worker and wait for current jobs to finish. */
+  async stop(): Promise<void> {
+    if (this.worker) {
+      await this.worker.close();
+      this.worker = null;
+    }
+    logger.info("webhook.worker.stop");
   }
 }

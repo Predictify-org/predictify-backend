@@ -28,6 +28,13 @@ import {
   BACKOFF_MS,
   MAX_ATTEMPTS,
 } from "../src/services/webhookDispatcher";
+import { webhookQueue } from "../src/queue";
+
+jest.mock("../src/queue", () => ({
+  webhookQueue: {
+    add: jest.fn().mockResolvedValue({}),
+  },
+}));
 
 // Convenience alias so tests can cast mocks without repeating the long type.
 type AnyDb = NodePgDatabase;
@@ -395,7 +402,7 @@ describe("attemptDelivery — network timeout", () => {
 
 describe("dispatchEvent — concurrent fan-out", () => {
   beforeEach(() => {
-    global.fetch = jest.fn().mockResolvedValue({ status: 200, text: async () => "" }) as unknown as typeof fetch;
+    jest.clearAllMocks();
   });
 
   it("delivers to all matching subscribers concurrently", async () => {
@@ -418,7 +425,7 @@ describe("dispatchEvent — concurrent fan-out", () => {
 
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.success)).toBe(true);
-    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(webhookQueue.add).toHaveBeenCalledTimes(2);
   });
 
   it("skips subscribers not interested in the event type", async () => {
@@ -430,7 +437,7 @@ describe("dispatchEvent — concurrent fan-out", () => {
     const results = await dispatchEvent(db as unknown as AnyDb, "market.resolved", { marketId: "m2" });
 
     expect(results).toHaveLength(0);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(webhookQueue.add).not.toHaveBeenCalled();
   });
 
   it("wildcard '*' subscription receives all event types", async () => {
@@ -445,22 +452,23 @@ describe("dispatchEvent — concurrent fan-out", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0].success).toBe(true);
+    expect(webhookQueue.add).toHaveBeenCalledTimes(1);
   });
 
-  it("returns results for all subscribers even when one gets a 5xx (allSettled)", async () => {
+  it("returns results for all subscribers even when one queue add fails (allSettled)", async () => {
     const subscriptions = [
       { id: "sub-e", url: "https://good.example.com/wh", secret: makeSecret(), events: ["market.resolved"], active: true },
       { id: "sub-f", url: "https://bad.example.com/wh",  secret: makeSecret(), events: ["market.resolved"], active: true },
     ];
 
-    // First fetch → 200, second fetch → 500.
-    let fetchCallCount = 0;
-    global.fetch = jest.fn().mockImplementation(() => {
-      fetchCallCount++;
-      return fetchCallCount === 2
-        ? Promise.resolve({ status: 500, text: async () => "err" })
-        : Promise.resolve({ status: 200, text: async () => "" });
-    }) as unknown as typeof fetch;
+    // First queue add -> succeeds, second -> fails.
+    let addCallCount = 0;
+    (webhookQueue.add as jest.Mock).mockImplementation(() => {
+      addCallCount++;
+      return addCallCount === 2
+        ? Promise.reject(new Error("Queue error"))
+        : Promise.resolve({});
+    });
 
     const db = makeDb();
     db._selectRows = subscriptions;

@@ -29,6 +29,7 @@ import { and, eq, lte, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { webhookDeliveries, webhookSubscriptions } from "../db/schema";
 import { logger } from "../config/logger";
+import { webhookQueue } from "../queue";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -162,8 +163,7 @@ export async function dispatchEvent(
     return [];
   }
 
-  // 2. Serialise the payload once; the exact bytes are what gets signed.
-  const rawBody = Buffer.from(JSON.stringify(payload), "utf8");
+  // 2. (Removed rawBody serialisation since it's deferred to the worker)
 
   // 3. Create delivery rows for each subscriber, then attempt concurrently.
   const results = await Promise.allSettled(
@@ -183,8 +183,9 @@ export async function dispatchEvent(
 
       if (!delivery) throw new Error("Failed to insert delivery record");
 
-      // Attempt the first delivery immediately.
-      return attemptDelivery(db, delivery.id, sub.url, sub.secret, rawBody, eventType);
+      // Enqueue the first delivery attempt to BullMQ.
+      await webhookQueue.add("deliver", { deliveryId: delivery.id });
+      return { deliveryId: delivery.id, success: true, statusCode: 202 };
     }),
   );
 
