@@ -32,6 +32,15 @@ describe("GET /metrics", () => {
     expect(res.status).toBe(200);
   });
 
+  it("also exposes the protected endpoint at /api/metrics", async () => {
+    process.env.METRICS_AUTH_TOKEN = "secret123";
+    const res = await request(createApp())
+      .get("/api/metrics")
+      .set("Authorization", "Bearer secret123");
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("http_request_duration_seconds");
+  });
+
   it("returns 401 when wrong token is provided", async () => {
     process.env.METRICS_AUTH_TOKEN = "secret123";
     const res = await request(createApp())

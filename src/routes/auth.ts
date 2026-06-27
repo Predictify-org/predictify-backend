@@ -1,15 +1,27 @@
 import { Router } from "express";
 import { z } from "zod";
+import { StrKey } from "@stellar/stellar-sdk";
 import {
   RefreshTokenError,
   rotateRefreshToken,
-  revokeFamily,
 } from "../services/refreshTokenService";
+import { createChallenge } from "../services/authChallengeService";
+import {
+  AuthVerifyError,
+  verifyChallengeAndIssueJwt,
+} from "../services/authVerifyService";
 import { logger } from "../config/logger";
 
 export const authRouter = Router();
 const refreshTokenBodySchema = z.object({
   refreshToken: z.string().min(1),
+});
+
+const challengeBodySchema = z.object({
+  stellarAddress: z.string().refine(
+    (addr) => StrKey.isValidEd25519PublicKey(addr),
+    { message: "Invalid Stellar ed25519 public key" },
+  ),
 });
 
 function parseRefreshToken(body: unknown): string | null {
@@ -53,11 +65,10 @@ authRouter.post("/refresh", async (req, res, next) => {
 
 authRouter.post("/challenge", async (req, res, next) => {
   try {
-    const refreshToken = parseRefreshToken(req.body);
-
-    if (!refreshToken) {
+    const parsed = challengeBodySchema.safeParse(req.body);
+    if (!parsed.success) {
       res.status(400).json({
-        error: { code: "invalid_request", message: "refreshToken is required and must be a string" },
+        error: { code: "invalid_address", message: "stellarAddress must be a valid Stellar public key" },
       });
       return;
     }
@@ -96,5 +107,11 @@ authRouter.post("/verify", async (req, res, next) => {
     );
 
     res.status(200).json(result);
-  } catch (e) { next(e); }
+  } catch (e) {
+    if (e instanceof AuthVerifyError) {
+      res.status(e.status).json({ error: { code: e.code } });
+      return;
+    }
+    next(e);
+  }
 });

@@ -7,7 +7,11 @@ import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
 import { usersRouter } from "./routes/users";
 import { createDocsRouter } from "./routes/docs";
+import { authRouter } from "./routes/auth";
+import { metricsRouter } from "./routes/metrics";
 import { errorHandler } from "./middleware/errorHandler";
+import { idempotency } from "./middleware/idempotency";
+import { metricsMiddleware } from "./metrics/httpMetrics";
 import { connectWithRetry, closeDb } from "./db/client";
 
 export function createApp(): express.Express {
@@ -25,6 +29,8 @@ export function createApp(): express.Express {
   app.use(metricsMiddleware);
 
   app.use("/health", healthRouter);
+  app.use("/metrics", metricsRouter);
+  app.use("/api/metrics", metricsRouter);
 
   // Idempotency guard for all state-mutating routes under /api.
   // Must be mounted before the routers it protects.
@@ -66,19 +72,6 @@ if (require.main === module) {
 
     await closeDb();
     clearTimeout(forceExit);
-    process.exit(0);
-  });
-  
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
-    logger.info("SIGTERM received, shutting down gracefully");
-    stopScheduler();
-    process.exit(0);
-  });
-  
-  process.on("SIGINT", () => {
-    logger.info("SIGINT received, shutting down gracefully");
-    stopScheduler();
     process.exit(0);
   });
 }

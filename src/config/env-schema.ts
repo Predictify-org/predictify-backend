@@ -8,6 +8,8 @@ export const envSchema = z.object({
 
   // ── Database ──────────────────────────────────────────────
   DATABASE_URL: z.string().url(),
+  PG_POOL_MAX: z.coerce.number().int().positive().default(10),
+  PG_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
   // ── JWT ───────────────────────────────────────────────────
   JWT_SECRET: z.string().min(32),
@@ -25,6 +27,9 @@ export const envSchema = z.object({
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   INDEXER_START_LEDGER: z.coerce.number().int().nonnegative().default(0),
   INDEXER_REWIND_LEDGERS: z.coerce.number().int().positive().default(100),
+
+  // ── Observability ─────────────────────────────────────────
+  METRICS_AUTH_TOKEN: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
