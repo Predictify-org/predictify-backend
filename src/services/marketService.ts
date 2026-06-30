@@ -4,6 +4,98 @@ import { markets, marketAuditLog } from "../db/schema";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { emitMarketEvent, LogEvent } from "../logging/events";
 
+/** Max character lengths enforced before hitting the DB */
+const QUESTION_MAX_LEN = 500;
+const METADATA_MAX_JSON_LEN = 4096;
+
+export class MarketExistsError extends Error {
+  status = 409;
+  code = "market_exists";
+  constructor() {
+    super("Market already exists");
+    Object.setPrototypeOf(this, MarketExistsError.prototype);
+  }
+}
+
+/** Zod-validated shape coming in from the route layer */
+export interface CreateMarketInput {
+  id: string;
+  question: string;
+  resolutionTime: Date;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  metadata?: any;
+}
+
+/**
+ * Creates an off-chain market shell keyed by the on-chain contract id.
+ *
+ * Idempotent on `id`: throws `MarketExistsError` (409) on duplicate.
+ * The row is inserted with `status = "pending"`, `indexedLedger = 0`,
+ * and `archived = false` so the indexer can later hydrate it.
+ *
+ * @param input - Validated market creation payload
+ * @param adminAddress - Stellar address of the admin creating the market
+ * @returns The persisted market row
+ * @throws MarketExistsError if a market with the same id already exists
+ */
+export async function createMarket(
+  input: CreateMarketInput,
+  adminAddress: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  const { id, question, resolutionTime, metadata } = input;
+
+  // Guard: validate lengths before hitting Postgres
+  if (question.length > QUESTION_MAX_LEN) {
+    const err = new Error(`question must be at most ${QUESTION_MAX_LEN} characters`);
+    (err as any).status = 400;
+    throw err;
+  }
+
+  if (metadata !== undefined) {
+    const serialized = JSON.stringify(metadata);
+    if (serialized.length > METADATA_MAX_JSON_LEN) {
+      const err = new Error(`metadata JSON must be at most ${METADATA_MAX_JSON_LEN} characters`);
+      (err as any).status = 400;
+      throw err;
+    }
+  }
+
+  // Check for duplicate before insert to return a clear 409
+  const existing = await getDb()
+    .select({ id: markets.id })
+    .from(markets)
+    .where(eq(markets.id, id))
+    .limit(1);
+
+  if (existing.length > 0) {
+    throw new MarketExistsError();
+  }
+
+  const [row] = await getDb()
+    .insert(markets)
+    .values({
+      id,
+      question,
+      resolutionTime,
+      metadata: metadata ?? null,
+      status: "pending",
+      indexedLedger: 0,
+      archived: false,
+      version: 1,
+    })
+    .returning();
+
+  emitMarketEvent(LogEvent.MARKET_UPDATED, {
+    marketId: id,
+    actor: adminAddress,
+    version: row.version,
+    fieldsUpdated: ["id", "question", "resolutionTime", "metadata"],
+  });
+
+  return row;
+}
+
 export interface Market {
   id: string;
   question: string;
