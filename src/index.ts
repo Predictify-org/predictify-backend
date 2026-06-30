@@ -20,6 +20,7 @@ import { notificationsRouter } from "./routes/notifications";
 import { socialRouter } from "./routes/social";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminMarketsRouter } from "./routes/admin/markets";
+import { adminSeedRouter } from "./routes/admin/seed";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestContextStorage } from "./lib/requestContext";
 import { REQUEST_ID_HEADER } from "./lib/http";
@@ -105,6 +106,7 @@ export function createApp(_options?: unknown): express.Express {
   app.use("/api/me/devices", devicesRouter);
   app.use("/api/admin/audit", adminAuditRouter);
   app.use("/api/admin/markets", adminMarketsRouter);
+  app.use("/api/admin/seed", adminSeedRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
