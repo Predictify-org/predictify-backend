@@ -1027,3 +1027,91 @@ registry.registerPath({
     },
   },
 });
+
+// ── /api/admin/circuit-breaker ────────────────────────────────────────────
+
+const BreakerType = z.enum(["indexer", "webhook"]).openapi("BreakerType");
+
+const BreakerState = z
+  .object({
+    type: BreakerType,
+    enabled: z.boolean(),
+    updatedAt: z.string().datetime(),
+    updatedBy: z.string(),
+  })
+  .openapi("BreakerState");
+
+const BreakerStateResponse = z
+  .object({ data: BreakerState })
+  .openapi("BreakerStateResponse");
+
+const ToggleBreakerRequest = z
+  .object({ enabled: z.boolean() })
+  .strict()
+  .openapi("ToggleBreakerRequest");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin/circuit-breaker",
+  operationId: "listCircuitBreakers",
+  tags: ["Admin"],
+  summary: "List all circuit breaker states (admin only)",
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: "Array of circuit breaker states",
+      content: { "application/json": { schema: z.object({ data: z.array(BreakerState) }) } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/admin/circuit-breaker/{type}",
+  operationId: "toggleCircuitBreaker",
+  tags: ["Admin"],
+  summary: "Toggle a circuit breaker (admin only)",
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ type: BreakerType }),
+    body: { content: { "application/json": { schema: ToggleBreakerRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Circuit breaker state updated",
+      content: { "application/json": { schema: BreakerStateResponse } },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    404: {
+      description: "Circuit breaker type not found",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});

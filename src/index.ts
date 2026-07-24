@@ -23,6 +23,7 @@ import { socialRouter } from "./routes/social";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminMarketsRouter } from "./routes/admin/markets";
 import { adminSchemaVersionsRouter } from "./routes/admin/schema-versions";
+import { adminCircuitBreakerRouter } from "./routes/admin/circuit-breaker";
 import { errorHandler } from "./middleware/errorHandler";
 import { startIndexerHealthProbe, stopIndexerHealthProbe } from "./jobs/indexerHealthProbe";
 import { requestContextStorage } from "./lib/requestContext";
@@ -113,9 +114,10 @@ export function createApp(deps: AppDeps = {}): express.Express {
   app.use("/api/users", userPortfolioRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/me/devices", devicesRouter);
-  app.use("/api/admin/audit", adminAuditRouter);
-  app.use("/api/admin/markets", adminMarketsRouter);
-  app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
+app.use("/api/admin/audit", adminAuditRouter);
+app.use("/api/admin/markets", adminMarketsRouter);
+app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
+app.use("/api/admin/circuit-breaker", adminCircuitBreakerRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
