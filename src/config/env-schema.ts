@@ -71,6 +71,15 @@ const baseSchema = z.object({
   // ── Metrics ───────────────────────────────────────────────
   /** Bearer token required to access /api/metrics. Empty string (default) means no auth. */
   METRICS_AUTH_TOKEN: z.string().default(""),
+  // ── CSRF (double-submit cookie) ───────────────────────────
+  /** Name of the CSRF token cookie. Not httpOnly — the client must be able to read it. */
+  CSRF_COOKIE_NAME: z.string().default("csrf_token"),
+  /** Name of the header clients must echo the CSRF token back in. */
+  CSRF_HEADER_NAME: z.string().default("x-csrf-token"),
+  /** Lifetime of an issued CSRF token, in seconds. */
+  CSRF_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
+  /** Name of the session/auth cookie whose presence triggers CSRF enforcement. */
+  SESSION_COOKIE_NAME: z.string().default("session"),
 });
 
 export const envSchema = baseSchema.refine(
