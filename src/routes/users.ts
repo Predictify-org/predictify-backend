@@ -7,6 +7,7 @@ import { AuthenticatedRequest } from "../middleware/auth";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { clampLimit, DEFAULT_PAGE_SIZE } from "../utils/cursor";
+import { RouteErrorFactory } from "../errors";
 
 export const usersRouter = Router();
 
@@ -124,7 +125,9 @@ usersRouter.get(
         { reqId, stellarAddress: req.params.stellarAddress, issues: parseResult.error.issues },
         "user_profile_validation_failed",
       );
-      throw RouteErrorFactory.validation(parseResult.error.issues[0]?.message ?? "invalid stellar address");
+      return next(
+        RouteErrorFactory.badRequest(parseResult.error.issues[0]?.message ?? "invalid stellar address"),
+      );
     }
 
     const stellarAddress = parseResult.data;
