@@ -377,3 +377,12 @@ export const webhooksRateLimiter = createPerUserTokenBucketLimiter({
   refillWindowMs: env.WEBHOOKS_RATE_LIMIT_WINDOW_MS,
   keyGenerator: getUserRateKey,
 });
+
+/**
+ * Pre-configured per-user rate limiter for `/api/fingerprint` route.
+ */
+export const fingerprintRateLimiter = createPerUserTokenBucketLimiter({
+  capacity: env.FINGERPRINT_RATE_LIMIT_CAPACITY,
+  refillWindowMs: env.FINGERPRINT_RATE_LIMIT_WINDOW_MS,
+  keyGenerator: getUserRateKey,
+});
