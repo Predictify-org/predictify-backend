@@ -24,6 +24,8 @@ export interface Page<T> {
   data: T[];
   /** Opaque cursor to pass as `?cursor=` for the next page, or null if last page. */
   nextCursor: string | null;
+  /** Optional total count of items matching the query (may be omitted when expensive to compute). */
+  total?: number;
 }
 
 export const DEFAULT_PAGE_SIZE = 20;

@@ -29,10 +29,16 @@ recommendationsRouter.get("/", requireAuth, async (req: AuthenticatedRequest, re
       return;
     }
 
-    return res.status(200).json({
-      data: page.data,
-      nextCursor: page.nextCursor,
-    });
+    // Return a clear pagination envelope so clients never need to guess
+    // which field holds the items or the cursor.
+    const body: Record<string, unknown> = {
+      items: page.data,
+      next_cursor: page.nextCursor,
+    };
+    if (page.total !== undefined) {
+      body.total = page.total;
+    }
+    return res.status(200).json(body);
   } catch (err) {
     logger.error({ reqId, correlationId: reqId, err }, "markets_recommendations_failed");
     return next(err);
