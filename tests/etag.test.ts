@@ -228,6 +228,9 @@ describe("GET /api/markets/:id – ETag integration", () => {
     version: 1,
   };
 
+  /** GET helper pre-configured with the allowed CORS origin. */
+  const get = (url: string) => request(createApp()).get(url).set("Origin", "http://localhost:5173");
+
   afterEach(() => {
     setDbForTests(null);
   });
@@ -236,7 +239,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("200 response includes an ETag header", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const res = await request(createApp()).get("/api/markets/market-etag-1");
+    const res = await get("/api/markets/market-etag-1");
 
     expect(res.status).toBe(200);
     expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
@@ -244,7 +247,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("200 response includes Cache-Control: no-cache", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const res = await request(createApp()).get("/api/markets/market-etag-1");
+    const res = await get("/api/markets/market-etag-1");
 
     expect(res.status).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-cache");
@@ -252,7 +255,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("200 body contains the full market payload", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const res = await request(createApp()).get("/api/markets/market-etag-1");
+    const res = await get("/api/markets/market-etag-1");
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
@@ -268,14 +271,13 @@ describe("GET /api/markets/:id – ETag integration", () => {
   it("returns 304 when If-None-Match matches current ETag", async () => {
     // First fetch to get the current ETag.
     setDbForTests(createMockDb([marketRow]));
-    const first = await request(createApp()).get("/api/markets/market-etag-1");
+    const first = await get("/api/markets/market-etag-1");
     const etag = first.headers["etag"];
     expect(etag).toBeDefined();
 
     // Second fetch with matching ETag.
     setDbForTests(createMockDb([marketRow]));
-    const second = await request(createApp())
-      .get("/api/markets/market-etag-1")
+    const second = await get("/api/markets/market-etag-1")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
@@ -283,12 +285,11 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("304 response has no body", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const first = await request(createApp()).get("/api/markets/market-etag-1");
+    const first = await get("/api/markets/market-etag-1");
     const etag = first.headers["etag"];
 
     setDbForTests(createMockDb([marketRow]));
-    const second = await request(createApp())
-      .get("/api/markets/market-etag-1")
+    const second = await get("/api/markets/market-etag-1")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
@@ -299,12 +300,11 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("304 response still includes ETag header", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const first = await request(createApp()).get("/api/markets/market-etag-1");
+    const first = await get("/api/markets/market-etag-1");
     const etag = first.headers["etag"];
 
     setDbForTests(createMockDb([marketRow]));
-    const second = await request(createApp())
-      .get("/api/markets/market-etag-1")
+    const second = await get("/api/markets/market-etag-1")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
@@ -315,8 +315,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("returns 200 when If-None-Match is stale (wrong hash)", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const res = await request(createApp())
-      .get("/api/markets/market-etag-1")
+    const res = await get("/api/markets/market-etag-1")
       .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
 
     expect(res.status).toBe(200);
@@ -325,7 +324,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("returns 200 when If-None-Match header is absent", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const res = await request(createApp()).get("/api/markets/market-etag-1");
+    const res = await get("/api/markets/market-etag-1");
     expect(res.status).toBe(200);
   });
 
@@ -333,22 +332,22 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("ETag is stable across repeated requests for the same market state", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const r1 = await request(createApp()).get("/api/markets/market-etag-1");
+    const r1 = await get("/api/markets/market-etag-1");
 
     setDbForTests(createMockDb([marketRow]));
-    const r2 = await request(createApp()).get("/api/markets/market-etag-1");
+    const r2 = await get("/api/markets/market-etag-1");
 
     expect(r1.headers["etag"]).toBe(r2.headers["etag"]);
   });
 
   it("ETag changes when the market version increments", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const r1 = await request(createApp()).get("/api/markets/market-etag-1");
+    const r1 = await get("/api/markets/market-etag-1");
     const etag1 = r1.headers["etag"];
 
     const updatedRow = { ...marketRow, version: 2 };
     setDbForTests(createMockDb([updatedRow]));
-    const r2 = await request(createApp()).get("/api/markets/market-etag-1");
+    const r2 = await get("/api/markets/market-etag-1");
     const etag2 = r2.headers["etag"];
 
     expect(etag1).not.toBe(etag2);
@@ -356,14 +355,13 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("sending old ETag after version bump returns 200 (not 304)", async () => {
     setDbForTests(createMockDb([marketRow]));
-    const first = await request(createApp()).get("/api/markets/market-etag-1");
+    const first = await get("/api/markets/market-etag-1");
     const staleEtag = first.headers["etag"];
 
     // Market bumped to version 2
     const updatedRow = { ...marketRow, version: 2 };
     setDbForTests(createMockDb([updatedRow]));
-    const second = await request(createApp())
-      .get("/api/markets/market-etag-1")
+    const second = await get("/api/markets/market-etag-1")
       .set("If-None-Match", staleEtag);
 
     expect(second.status).toBe(200);
@@ -374,7 +372,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("404 response does NOT include an ETag header", async () => {
     setDbForTests(createMockDb([])); // empty — market not found
-    const res = await request(createApp()).get("/api/markets/does-not-exist");
+    const res = await get("/api/markets/does-not-exist");
 
     expect(res.status).toBe(404);
     expect(res.headers["etag"]).toBeUndefined();
@@ -382,7 +380,7 @@ describe("GET /api/markets/:id – ETag integration", () => {
 
   it("404 still follows the standard error envelope", async () => {
     setDbForTests(createMockDb([]));
-    const res = await request(createApp()).get("/api/markets/does-not-exist");
+    const res = await get("/api/markets/does-not-exist");
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBeDefined();

@@ -26,11 +26,11 @@ import { usersRouter } from "./routes/users";
 import { predictionsRouter } from "./routes/predictions";
 import { usersHealthRouter } from "./routes/users/health";
 import { userPortfolioRouter } from "./routes/users/portfolio";
+import { statsRouter } from "./routes/stats";
 import { userStatsRouter } from "./routes/users/stats";
 import { devicesRouter } from "./routes/devices";
 import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminFeatureFlagsRouter } from "./routes/admin/featureFlags";
-import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminUsersRouter } from "./routes/adminUsers";
 import { adminNotesRouter } from "./routes/admin/users/notes";
 import { leaderboardRouter } from "./routes/leaderboard";
@@ -41,6 +41,7 @@ import { searchRouter } from "./routes/search";
 import { sessionsRouter } from "./routes/me/sessions";
 import { notificationsRouter } from "./routes/notifications";
 import { socialRouter } from "./routes/social";
+import { webhooksRouter } from "./routes/webhooks";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
@@ -70,16 +71,11 @@ import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
 
 
-const docsEnabled = env.NODE_ENV !== "production" || process.env.ENABLE_DOCS === "true";
+const docsEnabled =
+  process.env.ENABLE_DOCS === "true" ||
+  (env.NODE_ENV !== "test" && env.NODE_ENV !== "production");
 
 const REQUEST_ID_MAX_LENGTH = 64;
-
-export interface CreateAppOptions {
-  webhooks?: {
-    store: WebhookStore;
-    dispatcher: IWebhookDispatcher;
-  };
-}
 
 function sanitizeRequestId(raw: string): string | undefined {
   const sanitized = raw
@@ -88,11 +84,8 @@ function sanitizeRequestId(raw: string): string | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-export function createApp(_options: CreateAppOptions = {}): express.Express {
+export function createApp(): express.Express {
   const app = express();
-
-  const webhookStore: WebhookStore = options.webhooks?.store ?? new DrizzleWebhookStore(db);
-  const webhooksRouter = createWebhooksRouter({ store: webhookStore });
 
   app.set("etag", false);
 
@@ -177,9 +170,9 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/search", searchRouter);
   app.use("/api/quota/requests", quotaRequestsRouter);
   app.use("/api/notifications", notificationsRouter);
-  app.use("/api/webhooks", webhooksRouter);
   app.use("/api/webhooks/health", webhooksHealthRouter);
   app.use("/api/users/health", usersHealthRouter);
+  app.use("/api/stats", statsRouter);
   app.use("/api/users", socialRouter);
   app.use("/api/users", userPortfolioRouter);
   app.use("/api/users", userStatsRouter);
@@ -195,7 +188,6 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/admin/users", adminNotesRouter);
   app.use("/api/feature-flags", featureFlagsRouter);
   app.use("/api/admin/feature-flags", adminFeatureFlagsRouter);
-  app.use("/api/feature-flags", featureFlagsRouter);
   app.use("/api/admin/markets", adminMarketsRouter);
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
