@@ -21,6 +21,7 @@ import {
   authLogoutBodySchema,
   authWalletLogoutBodySchema,
 } from "../validators/auth";
+import { authMetricsMiddleware } from "../metrics/authMetrics";
 
 let activeAuthRequests = 0;
 let isAuthDraining = false;
@@ -97,6 +98,12 @@ authRouter.use((req, res, next) => {
 
 authRouter.use(accessLog);
 authRouter.use(requestTimeout(15000));
+
+// ── Per-endpoint Prometheus metrics ──────────────────────────────────────────
+// Registered after the drain guard so that all requests — including those
+// rejected early (rate limited, timed out, validation errors) — are counted.
+// Placed before the health sub-router so health probes are also tracked.
+authRouter.use(authMetricsMiddleware);
 
 // ── Health probe (no auth required) ───────────────────────────────────────
 authRouter.use("/health", authHealthRouter);

@@ -156,3 +156,38 @@ export const sloViolationsTotal = new Counter({
   labelNames: ["method", "route", "type"] as const,
   registers: [register],
 });
+
+/**
+ * Per-endpoint request counter for /api/auth routes.
+ *
+ * Labels:
+ *   method — HTTP verb (POST, GET, …)
+ *   route  — Express route template (e.g. /challenge, /verify, /refresh,
+ *             /logout, /wallet/logout); dynamic path segments such as UUIDs
+ *             and numeric IDs are normalised to /:id by the middleware.
+ *   status — HTTP response status code as a string (e.g. "200", "422", "429")
+ */
+export const authEndpointRequestsTotal = new Counter({
+  name: "auth_endpoint_requests_total",
+  help: "Total number of requests to /api/auth endpoints, segmented by method, route, and status",
+  labelNames: ["method", "route", "status"] as const,
+  registers: [register],
+});
+
+/**
+ * Per-endpoint request latency histogram for /api/auth routes.
+ *
+ * Labels match authEndpointRequestsTotal so counter and histogram can be
+ * joined in PromQL / Grafana dashboards without additional relabelling.
+ *
+ * Buckets (seconds) are tuned for auth flows: most successful challenge +
+ * verify pairs complete in < 100 ms; the 10 s upper bound catches edge-case
+ * timeouts before the 15 s route-level deadline fires.
+ */
+export const authEndpointDuration = new Histogram({
+  name: "auth_endpoint_duration_seconds",
+  help: "Request duration in seconds for /api/auth endpoints, segmented by method, route, and status",
+  labelNames: ["method", "route", "status"] as const,
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
