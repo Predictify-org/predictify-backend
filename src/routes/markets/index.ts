@@ -25,6 +25,7 @@ import { predictionCountRouter } from "./prediction-count";
 import { watchersRouter } from "./watchers";
 import { marketAuditRouter } from "../marketAudit";
 import { disputesRouter } from "../disputes";
+import { predictionsRouter } from "../predictions";
 import { requestTimeout } from "../../middleware/timeout";
 import {
   listMarketsQuerySchema,

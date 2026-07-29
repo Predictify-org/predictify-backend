@@ -37,8 +37,12 @@ import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { rateLimitAnon } from "../middleware/rateLimitAnon";
 import { statsMetricsMiddleware } from "../metrics/statsMetrics";
+import { statsCors } from "../middleware/cors";
 
 export const statsRouter = Router();
+
+// Apply CORS middleware
+statsRouter.use(statsCors());
 
 // Latency histogram — registered first so rate-limited (429) requests are
 // also observed, not just successful responses. See metrics/statsMetrics.ts.

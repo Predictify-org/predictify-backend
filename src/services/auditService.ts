@@ -77,14 +77,6 @@ export function sanitizeState(
       out[k] = v;
     }
   }
-  return out;
-}
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      out[k] = sanitizeState(v as Record<string, unknown>);
-    } else {
-      out[k] = v;
-    }
-  }
   return out as T;
 }
 
