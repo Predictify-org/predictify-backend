@@ -159,6 +159,7 @@ export function createApp(): express.Express {
   app.use("/api/health/ready", createReadyRouter({ db, redis: redisConnection }));
   app.use("/api/health/dependencies", dependenciesRouter);
   app.use("/api/health/version", versionRouter);
+  app.use("/api/health", healthRouter);
   app.use("/api/indexer", indexerHealthRouter);
   app.use("/api/indexer/cursor", indexerCursorRouter);
 
