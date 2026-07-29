@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { refreshTokens } from "../db/schema";
@@ -8,7 +9,7 @@ import { logger } from "../config/logger";
 import { RouteErrorFactory } from "../errors";
 import { securityHeaders } from "../middleware/securityHeaders";
 
-const paramsSchema = z.object({ id: z.string().uuid({ message: "invalid device id" }) });
+const deviceIdParamSchema = z.object({ id: z.string().uuid({ message: "invalid device id" }) });
 
 export const devicesRevokeRouter = Router({ mergeParams: true });
 

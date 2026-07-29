@@ -85,6 +85,10 @@ const baseSchema = z.object({
   INVITES_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
   INVITES_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 
+  // ── Exports rate limiting (per user, token bucket) ────────
+  EXPORTS_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
+  EXPORTS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+
   // ── Settle confirmer ──────────────────────────────────────
   SETTLE_CONFIRMER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   SETTLE_CONFIRMER_CONFIRMATION_LEDGERS: z.coerce.number().int().positive().default(2),

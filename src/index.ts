@@ -69,6 +69,7 @@ import { adminRateLimitInspectRouter } from "./routes/admin/rate-limit/inspect";
 import { quotaRequestsRouter } from "./routes/quota/requests";
 import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
 import { reportsRouter } from "./routes/reports";
+import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
@@ -207,6 +208,7 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
   app.use("/api/reports", reportsRouter);
+  app.use("/api/exports", exportsRouter);
   app.use("/api/fingerprint", fingerprintRouter);
   app.use("/api/alerts", alertsRouter);
   app.use("/api/referrals", referralsRouter);
