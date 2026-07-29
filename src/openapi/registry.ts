@@ -2518,9 +2518,11 @@ const PredictionRow = z
 
 const PredictionsListResponse = z
   .object({
-    data: z.array(PredictionRow),
+    items: z.array(PredictionRow),
     /** Opaque cursor for the next page, or null if this is the last page. */
-    nextCursor: z.string().nullable(),
+    next_cursor: z.string().nullable(),
+    /** Optional total count for clients that need it. */
+    total: z.number().int().nonnegative().optional(),
   })
   .openapi("PredictionsListResponse");
 
@@ -2545,8 +2547,8 @@ registry.registerPath({
   description:
     "Returns a cursor-paginated list of predictions placed by the caller. " +
     "Sort order is `createdAt DESC, id DESC`. " +
-    "Pass the returned `nextCursor` as `?cursor=` to fetch the next page. " +
-    "`nextCursor` is `null` when no further pages exist.",
+    "Pass the returned `next_cursor` as `?cursor=` to fetch the next page. " +
+    "`next_cursor` is `null` when no further pages exist.",
   security: [{ bearerAuth: [] }],
   request: {
     query: z.object({
@@ -2556,7 +2558,7 @@ registry.registerPath({
       status: PredictionStatus.optional(),
       /** Filter by chosen outcome value (e.g. "yes" / "no"). */
       outcome: z.string().min(1).max(64).optional(),
-      /** Opaque cursor from the previous page\u2019s `nextCursor`. */
+      /** Opaque cursor from the previous page’s `next_cursor`. */
       cursor: z.string().optional(),
       /** Page size — default 20, max 100. */
       limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
@@ -2571,7 +2573,7 @@ registry.registerPath({
           examples: {
             authenticatedPredictionsPage: {
               value: {
-                data: [
+                items: [
                   {
                     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                     marketId: "market_123",
@@ -2585,7 +2587,7 @@ registry.registerPath({
                     resolutionTime: "2026-06-01T12:00:00.000Z",
                   },
                 ],
-                nextCursor: "cursor_abc123",
+                next_cursor: "cursor_abc123",
               },
             },
           },
