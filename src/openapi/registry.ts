@@ -662,9 +662,8 @@ registry.registerPath({
     "the server responds 304 Not Modified (no body).",
   request: {
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -744,9 +743,8 @@ registry.registerPath({
       page: z.coerce.number().int().positive().optional(),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when results are unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -879,9 +877,8 @@ registry.registerPath({
   request: {
     params: z.object({ id: z.string() }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the market is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -921,11 +918,6 @@ registry.registerPath({
         },
       },
     },
-    404: {
-      description: "Not found",
-      content: { "application/json": { schema: ErrorBody } },
-    },
-  },
     304: {
       description: "Not Modified — market unchanged since the ETag in If-None-Match.",
     },
@@ -2182,9 +2174,8 @@ registry.registerPath({
         .openapi({ description: "Page size (1–100, default 20)." }),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2243,9 +2234,8 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   request: {
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when content is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2323,9 +2313,8 @@ registry.registerPath({
       limit: z.coerce.number().int().min(1).max(100).default(20),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2420,9 +2409,8 @@ registry.registerPath({
   request: {
     params: z.object({ stellarAddress: z.string() }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the profile is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
