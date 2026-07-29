@@ -13,14 +13,16 @@ export interface AuditLogFilters {
 }
 
 export interface AuditLogItem {
-  id: string;
-  action: string;
-  walletAddress: string | null;
-  ip: string;
-  correlationId: string;
-  rateLimitContext: unknown;
-  createdAt: Date;
-}
+   id: string;
+   action: string;
+   walletAddress: string | null;
+   ip: string;
+   correlationId: string;
+   entityType: string | null;
+   entityId: string | null;
+   rateLimitContext: unknown;
+   createdAt: Date;
+ }
 
 /**
  * Retrieve a paginated list of audit logs matching the given filter criteria.

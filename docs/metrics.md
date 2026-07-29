@@ -33,7 +33,7 @@ Collected by `prom-client`'s `collectDefaultMetrics`:
 |---|---|---|---|
 | `http_request_duration_seconds` | Histogram | `route`, `status` | HTTP request duration in seconds, bucketed |
 | `stats_request_duration_seconds` | Histogram | `route`, `status` | `/api/stats` request duration in seconds, bucketed. Observed for every request including ones rejected by rate limiting |
-| `markets_request_duration_seconds` | Histogram | `endpoint`, `method`, `status` | `/api/markets` request duration in seconds, bucketed per endpoint (`list`, `search`, `featured`, `upcoming`, `get`, `patch`) |
+| `markets_request_duration_seconds` | Histogram | `route`, `method`, `status` | `/api/markets` request duration in seconds, bucketed per route template, method, and status code |
 | `markets_requests_total` | Counter | `endpoint`, `method`, `status` | Total `/api/markets` requests, segmented per endpoint (`list`, `search`, `featured`, `upcoming`, `get`, `patch`) |
 | `indexer_polls_total` | Counter | — | Total indexer poll cycles completed |
 | `webhook_deliveries_total` | Counter | `status` | Webhook deliveries by outcome |

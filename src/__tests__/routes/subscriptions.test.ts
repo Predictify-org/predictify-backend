@@ -471,51 +471,163 @@ describe("Subscriptions Routes", () => {
     });
   });
 
-  describe("Mutations", () => {
-    it("POST /api/subscriptions creates and audits", async () => {
-      const newRow = { id: "sub-2", url: "https://x", events: [], active: true };
-      (db.insert as jest.Mock).mockReturnThis();
-      (db.values as jest.Mock).mockReturnThis();
-      (db.returning as jest.Mock).mockResolvedValueOnce([newRow]);
+describe("Mutations", () => {
+     it("POST /api/subscriptions creates and audits with entity type and id", async () => {
+       const newRow = { id: "sub-2", url: "https://x", events: [], active: true };
+       (db.insert as jest.Mock).mockReturnThis();
+       (db.values as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([newRow]);
 
-      const response = await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
+       const response = await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
 
-      expect(response.status).toBe(201);
-      expect(response.body.data).toEqual(JSON.parse(JSON.stringify(newRow)));
-      const { createAuditLog } = require("../../services/auditService");
-      expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "admin.subscription.create", afterState: newRow }));
-    });
+       expect(response.status).toBe(201);
+       expect(response.body.data).toEqual(JSON.parse(JSON.stringify(newRow)));
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+         action: "admin.subscription.create",
+         entityType: "Subscription",
+         entityId: newRow.id,
+         afterState: newRow,
+         beforeState: null,
+       }));
+     });
 
-    it("PATCH /api/subscriptions/:id updates and audits", async () => {
-      const existing = { id: "sub-3", url: "https://old", events: [], active: true };
-      const updated = { ...existing, url: "https://new" };
+     it("PATCH /api/subscriptions/:id updates and audits with entity type and id", async () => {
+       const existing = { id: "sub-3", url: "https://old", events: [], active: true };
+       const updated = { ...existing, url: "https://new" };
 
-      (db.from as jest.Mock).mockResolvedValueOnce([existing]);
-      (db.update as jest.Mock).mockReturnThis();
-      (db.set as jest.Mock).mockReturnThis();
-      (db.returning as jest.Mock).mockResolvedValueOnce([updated]);
+       (db.from as jest.Mock).mockResolvedValueOnce([existing]);
+       (db.update as jest.Mock).mockReturnThis();
+       (db.set as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([updated]);
 
-      const response = await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
+       const response = await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
 
-      expect(response.status).toBe(200);
-      expect(response.body.data).toEqual(JSON.parse(JSON.stringify(updated)));
-      const { createAuditLog } = require("../../services/auditService");
-      expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "admin.subscription.update", beforeState: existing, afterState: updated }));
-    });
+       expect(response.status).toBe(200);
+       expect(response.body.data).toEqual(JSON.parse(JSON.stringify(updated)));
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+         action: "admin.subscription.update",
+         entityType: "Subscription",
+         entityId: existing.id,
+         beforeState: existing,
+         afterState: updated,
+       }));
+     });
 
-    it("DELETE /api/subscriptions/:id deletes and audits", async () => {
-      const existing = { id: "sub-4", url: "https://del", events: [], active: true };
+     it("DELETE /api/subscriptions/:id deletes and audits with entity type and id", async () => {
+       const existing = { id: "sub-4", url: "https://del", events: [], active: true };
 
-      (db.from as jest.Mock).mockResolvedValueOnce([existing]);
-      (db.delete as jest.Mock).mockResolvedValueOnce({ rowCount: 1 });
+       (db.from as jest.Mock).mockResolvedValueOnce([existing]);
+       (db.delete as jest.Mock).mockResolvedValueOnce({ rowCount: 1 });
 
-      const response = await request(app).delete(`/api/subscriptions/${existing.id}`);
+       const response = await request(app).delete(`/api/subscriptions/${existing.id}`);
 
-      expect(response.status).toBe(204);
-      const { createAuditLog } = require("../../services/auditService");
-      expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "admin.subscription.delete", beforeState: existing, afterState: null }));
-    });
-  });
+       expect(response.status).toBe(204);
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+         action: "admin.subscription.delete",
+         entityType: "Subscription",
+         entityId: existing.id,
+         beforeState: existing,
+         afterState: null,
+       }));
+     });
+
+     it("POST /api/subscriptions includes correlationId in audit log", async () => {
+       const newRow = { id: "sub-5", url: "https://x", events: [], active: true };
+       (db.insert as jest.Mock).mockReturnThis();
+       (db.values as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([newRow]);
+
+       await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+         correlationId: expect.any(String),
+       }));
+     });
+
+     it("POST /api/subscriptions includes endpoint metadata in audit log", async () => {
+       const newRow = { id: "sub-6", url: "https://x", events: [], active: true };
+       (db.insert as jest.Mock).mockReturnThis();
+       (db.values as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([newRow]);
+
+       await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+         metadata: expect.objectContaining({ endpoint: "/api/subscriptions" }),
+       }));
+     });
+
+     it("PATCH /api/subscriptions/:id redacts secret from beforeState in audit log", async () => {
+       const existing = { id: "sub-7", url: "https://old", events: [], active: true, secret: "super-secret" };
+       const updated = { ...existing, url: "https://new" };
+
+       (db.from as jest.Mock).mockResolvedValueOnce([existing]);
+       (db.update as jest.Mock).mockReturnThis();
+       (db.set as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([updated]);
+
+       await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
+
+       const { createAuditLog } = require("../../services/auditService");
+       const callArgs = createAuditLog.mock.calls[0][0];
+       expect(callArgs.beforeState.secret).toBe("[REDACTED]");
+     });
+
+     it("PATCH /api/subscriptions/:id redacts secret from afterState in audit log", async () => {
+       const existing = { id: "sub-8", url: "https://old", events: [], active: true };
+       const updated = { ...existing, url: "https://new", secret: "super-secret" };
+
+       (db.from as jest.Mock).mockResolvedValueOnce([existing]);
+       (db.update as jest.Mock).mockReturnThis();
+       (db.set as jest.Mock).mockReturnThis();
+       (db.returning as jest.Mock).mockResolvedValueOnce([updated]);
+
+       await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
+
+       const { createAuditLog } = require("../../services/auditService");
+       const callArgs = createAuditLog.mock.calls[0][0];
+       expect(callArgs.afterState.secret).toBe("[REDACTED]");
+     });
+
+     it("GET /api/subscriptions does not create an audit record", async () => {
+       (db.from as jest.Mock).mockResolvedValueOnce([]);
+
+       await request(app).get("/api/subscriptions");
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).not.toHaveBeenCalled();
+     });
+
+     it("POST /api/subscriptions does not audit on validation failure", async () => {
+       await request(app).post("/api/subscriptions").send({ url: "http://not-https.com", events: [] });
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).not.toHaveBeenCalled();
+     });
+
+     it("PATCH /api/subscriptions/:id does not audit when subscription not found", async () => {
+       (db.from as jest.Mock).mockResolvedValueOnce([]);
+
+       await request(app).patch("/api/subscriptions/123e4567-e89b-12d3-a456-426614174000").send({ url: "https://new.example.com" });
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).not.toHaveBeenCalled();
+     });
+
+     it("DELETE /api/subscriptions/:id does not audit when subscription not found", async () => {
+       (db.from as jest.Mock).mockResolvedValueOnce([]);
+
+       await request(app).delete("/api/subscriptions/123e4567-e89b-12d3-a456-426614174000");
+
+       const { createAuditLog } = require("../../services/auditService");
+       expect(createAuditLog).not.toHaveBeenCalled();
+     });
+   });
 });
 
 // ============================================================================

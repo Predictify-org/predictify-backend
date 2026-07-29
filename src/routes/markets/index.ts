@@ -15,9 +15,9 @@ import { accessLog } from "../../middleware/accessLog";
 import { marketsCors } from "../../middleware/cors";
 import { listFeaturedMarkets } from "../../services/marketFeatureService";
 import { logger } from "../../config/logger";
-import type { RequestHandler } from "express";
 import { RouteErrorFactory } from "../../errors";
 import { conditionalGet } from "../../middleware/etag";
+import { marketsMetricsMiddleware } from "../../metrics/marketsMetrics";
 import { recommendationsRouter } from "./recommendations";
 import { trendingRouter } from "./trending";
 import { tagsRouter } from "./tags";
@@ -38,19 +38,11 @@ import {
 
 export const marketsRouter = Router();
 
-/**
- * Simple pass-through wrapper for market route metrics tracking.
- * Wraps a named route handler so metrics middleware can distinguish
- * list/search/featured/get/patch operations.
- */
-function trackMarketsMetrics(_op: string): RequestHandler {
-  return (_req, _res, next) => next();
-}
-
 // Enforce CORS allowlist early so unapproved origins are rejected
 // before any processing (preflight responses cached via Access-Control-Max-Age).
 marketsRouter.use(marketsCors());
 marketsRouter.use(accessLog);
+marketsRouter.use(marketsMetricsMiddleware);
 marketsRouter.use(rateLimitAnon);
 marketsRouter.use(requestTimeout(10000));
 marketsRouter.use("/tags", tagsRouter);
@@ -62,7 +54,7 @@ marketsRouter.use("/:id/watchers", watchersRouter);
 marketsRouter.use("/:id/audit", marketAuditRouter);
 marketsRouter.use("/:id/disputes", disputesRouter);
 
-marketsRouter.get("/search", trackMarketsMetrics("search"), async (req, res, next) => {
+marketsRouter.get("/search", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   try {
     const parsed = searchMarketsQuerySchema.safeParse(req.query);
@@ -115,7 +107,7 @@ marketsRouter.get("/search", trackMarketsMetrics("search"), async (req, res, nex
   }
 });
 
-marketsRouter.get("/", trackMarketsMetrics("list"), async (req, res, next) => {
+marketsRouter.get("/", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   try {
     const parsed = listMarketsQuerySchema.safeParse(req.query);
@@ -152,7 +144,7 @@ marketsRouter.get("/", trackMarketsMetrics("list"), async (req, res, next) => {
   }
 });
 
-marketsRouter.get("/featured", trackMarketsMetrics("featured"), async (req, res, next) => {
+marketsRouter.get("/featured", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   try {
     const parsed = featuredMarketsQuerySchema.safeParse(req.query);
@@ -169,7 +161,7 @@ marketsRouter.get("/featured", trackMarketsMetrics("featured"), async (req, res,
   }
 });
 
-marketsRouter.get("/upcoming", trackMarketsMetrics("upcoming"), async (req, res, next) => {
+marketsRouter.get("/upcoming", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   try {
     const parsed = upcomingMarketsQuerySchema.safeParse(req.query);
@@ -193,7 +185,7 @@ marketsRouter.get("/upcoming", trackMarketsMetrics("upcoming"), async (req, res,
   }
 });
 
-marketsRouter.get("/:id", trackMarketsMetrics("get"), async (req, res, next) => {
+marketsRouter.get("/:id", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
 
   try {
@@ -234,7 +226,7 @@ marketsRouter.get("/:id", trackMarketsMetrics("get"), async (req, res, next) => 
   }
 });
 
-marketsRouter.patch("/:id", trackMarketsMetrics("patch"), requireAdmin, async (req: AuthenticatedRequest, res, next) => {
+marketsRouter.patch("/:id", requireAdmin, async (req: AuthenticatedRequest, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   const adminAddress = req.user?.stellarAddress;
 
