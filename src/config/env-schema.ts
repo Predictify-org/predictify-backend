@@ -101,6 +101,17 @@ const baseSchema = z.object({
   SLOW_QUERY_ALERTER_LIMIT: z.coerce.number().int().positive().default(10),
   SLOW_QUERY_ALERTER_QUERY_MAX_LENGTH: z.coerce.number().int().positive().default(1000),
 
+  // ── Per-user concurrency limiting ─────────────────────────
+  /**
+   * Maximum number of in-flight (concurrent) requests allowed for a single
+   * authenticated user (or IP for anonymous callers) at any point in time.
+   * Requests that exceed this cap receive HTTP 429 with a `Retry-After: 1`
+   * header.  Set to a large value (e.g. 1000) to effectively disable the
+   * limit without removing the middleware.
+   * Default: 10.
+   */
+  MAX_CONCURRENT_REQUESTS_PER_USER: z.coerce.number().int().positive().default(10),
+
   // ── Metrics ───────────────────────────────────────────────
   /** Bearer token required to access /api/metrics. Empty string (default) means no auth. */
   METRICS_AUTH_TOKEN: z.string().default(""),
