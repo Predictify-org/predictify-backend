@@ -79,6 +79,7 @@ import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
+import { perUserConcurrency } from "./middleware/perUserConcurrency";
 
 
 const docsEnabled =
@@ -159,6 +160,12 @@ export function createApp(): express.Express {
   app.use("/api/health/version", versionRouter);
   app.use("/api/indexer", indexerHealthRouter);
   app.use("/api/indexer/cursor", indexerCursorRouter);
+
+  // Cap in-flight concurrent requests per user/IP before any API route handler
+  // runs. This prevents a single identity from exhausting the thread / DB-pool
+  // by holding many connections open simultaneously.
+  // Configured via MAX_CONCURRENT_REQUESTS_PER_USER (default: 10).
+  app.use("/api", perUserConcurrency);
 
   const mutationMethods = ["POST", "PATCH"] as const;
   app.use("/api", (req, res, next) =>
