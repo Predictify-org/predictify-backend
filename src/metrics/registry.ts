@@ -166,3 +166,11 @@ export const notificationsEndpointDuration = new Histogram({
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
   registers: [register],
 });
+
+export const rateLimitRequestDuration = new Histogram({
+  name: "rate_limit_request_duration_seconds",
+  help: "Duration of /api/rate-limit requests in seconds, segmented by route and status code",
+  labelNames: ["route", "status"] as const,
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
