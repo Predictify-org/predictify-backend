@@ -29,21 +29,8 @@ import {
   webhookUrlSchema,
 } from "../../validators/subscriptions";
 
-// ---------------------------------------------------------------------------
-// Mocks
-// ---------------------------------------------------------------------------
-
-jest.mock("../../middleware/requireAdmin", () => ({
-  requireAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
-}));
-
-jest.mock("../../config/logger", () => ({
-  logger: {
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  },
+jest.mock("../../services/auditService", () => ({
+  createAuditLog: jest.fn().mockResolvedValue("corr-id"),
 }));
 
 // Build a fluent db mock that supports: select/insert/update/delete chains

@@ -16,16 +16,6 @@
  */
 
 // ---------------------------------------------------------------------------
-// Environment setup (must come before any src imports)
-// ---------------------------------------------------------------------------
-process.env.NODE_ENV = "test";
-process.env.LOG_LEVEL = "silent";
-process.env.DATABASE_URL = "postgres://localhost/test";
-process.env.JWT_SECRET = "a-test-secret-with-at-least-32-bytes!!";
-process.env.JWT_ISSUER = "predictify";
-process.env.JWT_AUDIENCE = "predictify-app";
-
-// ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
@@ -46,18 +36,7 @@ jest.mock("../src/config/logger", () => ({
   },
 }));
 
-// ---------------------------------------------------------------------------
-// Drizzle fluent query builder mock.
-//
-// Route query patterns:
-//   GET  /        select().from()                              → mockFrom   resolves row[]
-//   GET  /:id     select().from().where()                      → mockSelectWhere resolves row[]
-//   POST /        insert().values().returning()                → mockReturning resolves row[]
-//   PATCH /:id    select().from().where() (existence)          → mockSelectWhere resolves row[]
-//                 update().set().where().returning() (update)  → mockUpdateReturning resolves row[]
-//   DELETE /:id   delete().where()                             → mockDeleteWhere resolves {rowCount}
-// ---------------------------------------------------------------------------
-
+// Build a fluent db mock that supports: select/insert/update/delete chains
 const mockUpdateReturning = jest.fn();
 const mockSelectWhere = jest.fn();
 const mockUpdateWhere = jest.fn(() => ({ returning: mockUpdateReturning }));
@@ -78,6 +57,11 @@ jest.mock("../src/db/client", () => ({
     update: (...args: unknown[]) => mockUpdate(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
   },
+}));
+
+// Mock auditService - but we need to make sure this doesn't interfere with the tests
+jest.mock("../src/services/auditService", () => ({
+  createAuditLog: jest.fn().mockResolvedValue("corr-id"),
 }));
 
 // ---------------------------------------------------------------------------
