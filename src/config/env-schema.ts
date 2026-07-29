@@ -53,6 +53,9 @@ const baseSchema = z.object({
   // ── Notifications CORS ──────────────────────────────────
   NOTIFICATIONS_CORS_ALLOWED_ORIGINS: z.string().default(""),
 
+  // ── Stats CORS ──────────────────────────────────────────
+  STATS_CORS_ALLOWED_ORIGINS: z.string().default(""),
+
   // ── Geo-blocking ──────────────────────────────────────────
   GEO_BLOCKED_COUNTRIES: z.string().default("").transform((val) =>
     val.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),

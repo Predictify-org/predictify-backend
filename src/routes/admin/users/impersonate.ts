@@ -106,13 +106,15 @@ export function createAdminImpersonateRouter(
       // Wrap all downstream I/O in the circuit breaker.
       // If the breaker is OPEN this throws CircuitOpenError immediately
       // (before any network or DB call is attempted).
-      const token = await breaker.execute(async () => {
+      const token = await breaker.fire(async () => {
         // 1. Audit log in global audit_logs
         await createAuditLog({
           action: "admin.impersonate",
           walletAddress: adminAddress,
           ip: req.ip ?? "unknown",
           correlationId: reqId,
+          beforeState: null,
+          afterState: { targetAddress, role: "user" },
         });
 
         // 2. Audit log in admin_audit_log keyed by target address
