@@ -2,7 +2,7 @@ import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { requireAdmin } from "../../middleware/requireAdmin";
-import { REQUEST_ID_HEADER, CORRELATION_ID_HEADER } from "../../lib/http";
+import { CORRELATION_ID_HEADER } from "../../lib/http";
 import { getCorrelationId } from "../../middleware/correlation";
 import {
   DrizzleFraudRepo,

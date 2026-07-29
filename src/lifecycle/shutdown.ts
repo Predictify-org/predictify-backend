@@ -182,7 +182,7 @@ async function flushLogs(): Promise<void> {
   // Pino logger flush - if using pino
   // This ensures all logs are written before exit
   await new Promise((resolve) => {
-    (logger as any).flush?.();
+    (logger as unknown as { flush?: () => void }).flush?.();
     resolve(undefined);
   });
 }

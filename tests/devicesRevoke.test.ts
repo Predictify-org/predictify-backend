@@ -29,6 +29,7 @@ jest.mock("../src/config/logger", () => ({
 }));
 
 import { devicesRevokeRouter } from "../src/routes/devicesRevoke";
+import { errorHandler } from "../src/middleware/errorHandler";
 
 const FAMILY = "11111111-1111-1111-1111-111111111111";
 
@@ -36,6 +37,7 @@ function makeApp(): express.Express {
   const app = express();
   app.use(express.json());
   app.use("/api/me/devices/:id/revoke", devicesRevokeRouter);
+  app.use(errorHandler);
   return app;
 }
 

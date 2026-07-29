@@ -1,67 +1,64 @@
 import request from "supertest";
-import { createApp } from "../../src/index";
-import { closeDb } from "../../src/db/client";
+import express from "express";
+import { Keypair } from "@stellar/stellar-sdk";
+import { v4 as uuidv4 } from "uuid";
+import { closeDb, pool } from "../../src/db/client";
+import { closeAuthPool } from "../../src/middleware/requireAuth";
+import { signAccessToken } from "../../src/services/jwtService";
+import { requestContextStorage } from "../../src/lib/requestContext";
+import { authRouter } from "../../src/routes/auth";
+import { errorHandler } from "../../src/middleware/errorHandler";
+import { hashToken, issueRefreshToken } from "../../src/services/refreshTokenService";
+import { eq } from "drizzle-orm";
+import { refreshTokens, users } from "../../src/db/schema";
 
-// ─────────────────────────────────────────────────────────────────────────
-// Mocks
-// ─────────────────────────────────────────────────────────────────────────
-
-// Mock the queue connection
-jest.mock("../../src/queue", () => ({
-  redisConnection: {
-    status: "ready",
-    on: jest.fn(),
-    quit: jest.fn(),
-  },
+jest.mock("../../src/middleware/rateLimit", () => ({
+  createPerUserRateLimiter: jest.fn(() => (_req: any, _res: any, next: any) => next()),
 }));
 
-// Mock the services
-jest.mock("../../src/services/authChallengeService", () => ({
-  createChallenge: jest.fn().mockResolvedValue({
-    nonce: "test-nonce",
-    expiresAt: new Date(Date.now() + 1000 * 60 * 5),
-  }),
+jest.mock("../../src/middleware/loginRateLimit", () => ({
+  loginRateLimit: jest.fn((_: any, _res: any, next: any) => next()),
 }));
 
-jest.mock("../../src/services/authVerifyService", () => ({
-  verifyChallengeAndIssueJwt: jest.fn().mockResolvedValue({
-    ok: true,
-    value: {
-      accessToken: "access-token-123",
-      refreshToken: "refresh-token-123",
-      user: { id: "1", stellarAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF" },
-    },
-  }),
-}));
+const VALID_ADDRESS = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const INVALID_ADDRESS = "invalid-address";
+const WHITESPACE_ADDRESS = "   ";
 
-jest.mock("../../src/services/refreshTokenService", () => ({
-  rotateRefreshToken: jest.fn().mockResolvedValue({
-    ok: true,
-    value: {
-      accessToken: "new-access-token",
-      refreshToken: "new-refresh-token",
-    },
-  }),
-  revokeFamily: jest.fn().mockResolvedValue(undefined),
-}));
+function createAuthApp(): express.Express {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    const requestId = uuidv4();
+    requestContextStorage.run({ requestId }, next);
+  });
+  app.use("/api/auth", authRouter);
+  app.use(errorHandler);
+  return app;
+}
 
-// ─────────────────────────────────────────────────────────────────────────
-// Test Suite
-// ─────────────────────────────────────────────────────────────────────────
+function signNonce(keypair: Keypair, nonce: string): string {
+  return keypair.sign(Buffer.from(nonce, "utf8")).toString("base64");
+}
 
-describe("Integration Test: /api/auth with Zod Validation", () => {
-  let app: any;
+async function seedRefreshToken(userId: string, stellarAddress: string): Promise<string> {
+  const { token } = await issueRefreshToken(userId);
+  return token;
+}
 
-  const VALID_ADDRESS = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-  const INVALID_ADDRESS = "invalid-address";
-  const WHITESPACE_ADDRESS = "   ";
+describe("Integration Test: /api/auth end-to-end", () => {
+  let app: express.Express;
 
   beforeAll(() => {
-    app = createApp();
+    app = createAuthApp();
   });
 
   afterAll(async () => {
+    await closeAuthPool();
     await closeDb();
+  });
+
+  beforeEach(async () => {
+    await pool.query("TRUNCATE TABLE auth_challenges, refresh_tokens, users RESTART IDENTITY CASCADE");
   });
 
   // ───────────────────────────────────────────────────────────────────────
@@ -76,10 +73,10 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({})
           .expect(422);
 
-        expect(response.body).toHaveProperty("error.type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
         expect(response.body.error.fields.stellarAddress).toContain("Stellar address is required");
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(response.headers).toHaveProperty("x-correlation-id");
       });
 
       it("returns 422 if stellarAddress is null", async () => {
@@ -88,7 +85,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: null })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
       });
 
@@ -98,7 +95,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: 12345 })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
       });
 
@@ -108,7 +105,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: INVALID_ADDRESS })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
         expect(response.body.error.fields.stellarAddress[0]).toContain("Invalid Stellar");
       });
@@ -119,7 +116,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: WHITESPACE_ADDRESS })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
       });
 
@@ -129,7 +126,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: VALID_ADDRESS, extraField: "should-fail" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
       });
     });
 
@@ -140,10 +137,17 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ stellarAddress: VALID_ADDRESS })
           .expect(201);
 
-        expect(response.body).toHaveProperty("nonce", "test-nonce");
+        expect(response.body).toHaveProperty("nonce");
         expect(response.body).toHaveProperty("expiresAt");
-        expect(response.body.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); // ISO 8601 format
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(response.body.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+        expect(response.headers).toHaveProperty("x-correlation-id");
+
+        const dbRows = await pool.query(
+          "SELECT * FROM auth_challenges WHERE stellar_address = $1",
+          [VALID_ADDRESS],
+        );
+        expect(dbRows.rows).toHaveLength(1);
+        expect(dbRows.rows[0].nonce).toBe(response.body.nonce);
       });
 
       it("trims whitespace from stellarAddress", async () => {
@@ -153,7 +157,13 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .expect(201);
 
         expect(response.body).toHaveProperty("nonce");
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(response.headers).toHaveProperty("x-correlation-id");
+
+        const dbRows = await pool.query(
+          "SELECT * FROM auth_challenges WHERE stellar_address = $1",
+          [VALID_ADDRESS],
+        );
+        expect(dbRows.rows).toHaveLength(1);
       });
     });
   });
@@ -173,7 +183,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
       });
 
@@ -186,7 +196,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.nonce");
       });
 
@@ -199,7 +209,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.signature");
       });
 
@@ -213,7 +223,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.stellarAddress");
       });
 
@@ -227,7 +237,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.nonce");
         expect(response.body.error.fields.nonce[0]).toContain("non-empty");
       });
@@ -242,7 +252,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.signature");
         expect(response.body.error.fields.signature[0]).toContain("non-empty");
       });
@@ -258,39 +268,124 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
       });
     });
 
     describe("success (200)", () => {
-      it("returns 200 with tokens for valid request", async () => {
-        const response = await request(app)
+      it("returns 200 with tokens for valid request and creates user in DB", async () => {
+        const keypair = Keypair.random();
+        const address = keypair.publicKey();
+
+        const challengeRes = await request(app)
+          .post("/api/auth/challenge")
+          .send({ stellarAddress: address })
+          .expect(201);
+
+        const { nonce } = challengeRes.body;
+        const signature = signNonce(keypair, nonce);
+
+        const verifyRes = await request(app)
           .post("/api/auth/verify")
           .send({
-            stellarAddress: VALID_ADDRESS,
-            nonce: "test-nonce",
-            signature: "test-signature",
+            stellarAddress: address,
+            nonce,
+            signature,
           })
           .expect(200);
 
-        expect(response.body).toHaveProperty("accessToken", "access-token-123");
-        expect(response.body).toHaveProperty("refreshToken", "refresh-token-123");
-        expect(response.body).toHaveProperty("user");
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(verifyRes.body).toHaveProperty("accessToken");
+        expect(verifyRes.body).toHaveProperty("expiresIn");
+        expect(verifyRes.headers).toHaveProperty("x-correlation-id");
+
+        const dbRows = await pool.query(
+          "SELECT * FROM users WHERE stellar_address = $1",
+          [address],
+        );
+        expect(dbRows.rows).toHaveLength(1);
       });
 
-      it("trims whitespace from all string fields", async () => {
+      it("returns 401 for invalid signature", async () => {
+        const keypair = Keypair.random();
+        const address = keypair.publicKey();
+
+        const challengeRes = await request(app)
+          .post("/api/auth/challenge")
+          .send({ stellarAddress: address })
+          .expect(201);
+
+        const { nonce } = challengeRes.body;
+        const wrongKeypair = Keypair.random();
+        const badSignature = signNonce(wrongKeypair, nonce);
+
         const response = await request(app)
           .post("/api/auth/verify")
           .send({
-            stellarAddress: `  ${VALID_ADDRESS}  `,
-            nonce: "  test-nonce  ",
-            signature: "  test-signature  ",
+            stellarAddress: address,
+            nonce,
+            signature: badSignature,
+          })
+          .expect(401);
+
+        expect(response.body.error).toHaveProperty("code", "unauthorized");
+      });
+
+      it("returns 401 for reused nonce", async () => {
+        const keypair = Keypair.random();
+        const address = keypair.publicKey();
+
+        const challengeRes = await request(app)
+          .post("/api/auth/challenge")
+          .send({ stellarAddress: address })
+          .expect(201);
+
+        const { nonce } = challengeRes.body;
+        const signature = signNonce(keypair, nonce);
+
+        await request(app)
+          .post("/api/auth/verify")
+          .send({
+            stellarAddress: address,
+            nonce,
+            signature,
+          })
+          .expect(200);
+
+        const response = await request(app)
+          .post("/api/auth/verify")
+          .send({
+            stellarAddress: address,
+            nonce,
+            signature,
+          })
+          .expect(401);
+
+        expect(response.body.error).toHaveProperty("code", "unauthorized");
+      });
+
+      it("trims whitespace from all string fields", async () => {
+        const keypair = Keypair.random();
+        const address = keypair.publicKey();
+
+        const challengeRes = await request(app)
+          .post("/api/auth/challenge")
+          .send({ stellarAddress: `  ${address}  ` })
+          .expect(201);
+
+        const { nonce } = challengeRes.body;
+        const signature = signNonce(keypair, nonce);
+
+        const response = await request(app)
+          .post("/api/auth/verify")
+          .send({
+            stellarAddress: `  ${address}  `,
+            nonce: `  ${nonce}  `,
+            signature: `  ${signature}  `,
           })
           .expect(200);
 
         expect(response.body).toHaveProperty("accessToken");
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(response.headers).toHaveProperty("x-correlation-id");
       });
     });
   });
@@ -307,7 +402,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({})
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
         expect(response.body.error.fields.refreshToken).toContain("refreshToken is required");
       });
@@ -318,7 +413,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: null })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -328,7 +423,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: 12345 })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -338,7 +433,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -348,7 +443,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "   " })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -358,30 +453,44 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "valid-token", extraField: "should-fail" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
       });
     });
 
     describe("success (200)", () => {
       it("returns 200 with new tokens if refreshToken is valid", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
         const response = await request(app)
           .post("/api/auth/refresh")
-          .send({ refreshToken: "valid-token" })
-          .expect(200);
-
-        expect(response.body).toHaveProperty("accessToken", "new-access-token");
-        expect(response.body).toHaveProperty("refreshToken", "new-refresh-token");
-        expect(response.headers).toHaveProperty("x-request-id");
-      });
-
-      it("trims whitespace from refreshToken", async () => {
-        const response = await request(app)
-          .post("/api/auth/refresh")
-          .send({ refreshToken: "  valid-token  " })
+          .send({ refreshToken: rawToken })
           .expect(200);
 
         expect(response.body).toHaveProperty("accessToken");
-        expect(response.headers).toHaveProperty("x-request-id");
+        expect(response.body).toHaveProperty("refreshToken");
+        expect(response.headers).toHaveProperty("x-correlation-id");
+      });
+
+      it("trims whitespace from refreshToken", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
+        const response = await request(app)
+          .post("/api/auth/refresh")
+          .send({ refreshToken: `  ${rawToken}  ` })
+          .expect(200);
+
+        expect(response.body).toHaveProperty("accessToken");
+        expect(response.headers).toHaveProperty("x-correlation-id");
       });
     });
   });
@@ -398,7 +507,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({})
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -408,7 +517,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -418,7 +527,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: 12345 })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -428,22 +537,42 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "valid-token", extraField: "should-fail" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
       });
     });
 
     describe("success (204)", () => {
       it("returns 204 No Content if refreshToken is valid", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
         await request(app)
           .post("/api/auth/logout")
-          .send({ refreshToken: "valid-token" })
+          .send({ refreshToken: rawToken })
           .expect(204);
+
+        const tokenRows = await pool.query(
+          "SELECT revoked_at FROM refresh_tokens WHERE token_hash = $1",
+          [hashToken(rawToken)],
+        );
+        expect(tokenRows.rows[0].revoked_at).not.toBeNull();
       });
 
       it("returns 204 even with whitespace-padded token", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
         await request(app)
           .post("/api/auth/logout")
-          .send({ refreshToken: "  valid-token  " })
+          .send({ refreshToken: `  ${rawToken}  ` })
           .expect(204);
       });
     });
@@ -461,7 +590,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({})
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -471,7 +600,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -481,7 +610,7 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: 12345 })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
         expect(response.body.error).toHaveProperty("fields.refreshToken");
       });
 
@@ -491,22 +620,42 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
           .send({ refreshToken: "valid-token", extraField: "should-fail" })
           .expect(422);
 
-        expect(response.body.error).toHaveProperty("type", "ValidationError");
+        expect(response.body.error).toHaveProperty("code", "validation_error");
       });
     });
 
     describe("success (204)", () => {
       it("returns 204 No Content if refreshToken is valid", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
         await request(app)
           .post("/api/auth/wallet/logout")
-          .send({ refreshToken: "valid-token" })
+          .send({ refreshToken: rawToken })
           .expect(204);
+
+        const tokenRows = await pool.query(
+          "SELECT revoked_at FROM refresh_tokens WHERE token_hash = $1",
+          [hashToken(rawToken)],
+        );
+        expect(tokenRows.rows[0].revoked_at).not.toBeNull();
       });
 
       it("returns 204 even with whitespace-padded token", async () => {
+        const userRes = await pool.query(
+          "INSERT INTO users (stellar_address) VALUES ($1) RETURNING id",
+          [VALID_ADDRESS],
+        );
+        const userId = userRes.rows[0].id;
+        const rawToken = await seedRefreshToken(userId, VALID_ADDRESS);
+
         await request(app)
           .post("/api/auth/wallet/logout")
-          .send({ refreshToken: "  valid-token  " })
+          .send({ refreshToken: `  ${rawToken}  ` })
           .expect(204);
       });
     });
@@ -546,29 +695,6 @@ describe("Integration Test: /api/auth with Zod Validation", () => {
 
       expect(response.body.error).toHaveProperty("fields");
       expect(typeof response.body.error.fields).toBe("object");
-    });
-  });
-});
-        .expect(204);
-    });
-  });
-
-  describe("POST /api/auth/wallet/logout", () => {
-    it("returns 400 if refreshToken is missing", async () => {
-      const response = await request(app)
-        .post("/api/auth/wallet/logout")
-        .send({})
-        .expect(400);
-
-      expect(response.body.error).toHaveProperty("type", "BadRequest");
-      expect(response.headers).toHaveProperty("x-request-id");
-    });
-
-    it("returns 204 if valid token provided", async () => {
-      await request(app)
-        .post("/api/auth/wallet/logout")
-        .send({ refreshToken: "valid-token" })
-        .expect(204);
     });
   });
 });

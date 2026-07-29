@@ -3,12 +3,23 @@ import {
   extendZodWithOpenApi,
   OpenAPIRegistry,
 } from "@asteasolutions/zod-to-openapi";
+import { recommendationsQuerySchema } from "../validators/markets";
 
 extendZodWithOpenApi(z);
 
 export const registry = new OpenAPIRegistry();
 
 // ── Reusable component schemas ───────────────────────────────────────────────
+
+/**
+ * Shared header schema for endpoints that accept an Idempotency-Key.
+ * Detects duplicate submissions so the client can safely retry on network errors.
+ */
+const IdempotencyKeyHeader = z.object({
+  "Idempotency-Key": z.string().min(1).max(255).openapi({
+    description: "Unique idempotency key for safe retries. See RFC 7231 §6.3.2.",
+  }),
+});
 
 export const ErrorBody = registry.register(
   "ErrorBody",
@@ -196,6 +207,7 @@ registry.registerPath({
   tags: ["Auth"],
   summary: "Request a sign-in challenge nonce",
   request: {
+    headers: IdempotencyKeyHeader,
     body: {
       content: {
         "application/json": {
@@ -232,6 +244,10 @@ registry.registerPath({
       description: "Validation error",
       content: { "application/json": { schema: ValidationErrorBody } },
     },
+    409: {
+      description: "Idempotency key conflict",
+      content: { "application/json": { schema: ErrorBody } },
+    },
   },
 });
 
@@ -253,6 +269,7 @@ registry.registerPath({
   tags: ["Auth"],
   summary: "Verify challenge signature and obtain JWT",
   request: {
+    headers: IdempotencyKeyHeader,
     body: {
       content: {
         "application/json": {
@@ -295,6 +312,10 @@ registry.registerPath({
       description: "Invalid signature",
       content: { "application/json": { schema: ErrorBody } },
     },
+    409: {
+      description: "Idempotency key conflict",
+      content: { "application/json": { schema: ErrorBody } },
+    },
   },
 });
 
@@ -309,6 +330,7 @@ registry.registerPath({
   tags: ["Auth"],
   summary: "Rotate a refresh token",
   request: {
+    headers: IdempotencyKeyHeader,
     body: {
       content: {
         "application/json": {
@@ -345,11 +367,16 @@ registry.registerPath({
       description: "Missing token",
       content: { "application/json": { schema: ErrorBody } },
     },
+    409: {
+      description: "Idempotency key conflict",
+      content: { "application/json": { schema: ErrorBody } },
+    },
     401: {
       description: "Invalid token",
       content: { "application/json": { schema: ErrorBody } },
     },
     403: {
+      description: "Reuse detected — family revoked",
       description: "Reuse detected \u2014 family revoked",
       content: { "application/json": { schema: ErrorBody } },
     },
@@ -363,6 +390,7 @@ registry.registerPath({
   tags: ["Auth"],
   summary: "Revoke the entire refresh-token family",
   request: {
+    headers: IdempotencyKeyHeader,
     body: {
       content: {
         "application/json": {
@@ -382,6 +410,46 @@ registry.registerPath({
     204: { description: "Logged out" },
     400: {
       description: "Missing token",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    409: {
+      description: "Idempotency key conflict",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/auth/wallet/logout",
+  operationId: "authWalletLogout",
+  tags: ["Auth"],
+  summary: "Revoke the entire refresh-token family for wallet logout",
+  request: {
+    headers: IdempotencyKeyHeader,
+    body: {
+      content: {
+        "application/json": {
+          schema: RefreshRequest,
+          examples: {
+            walletLogoutRequest: {
+              value: {
+                refreshToken: "refresh-token-001",
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  responses: {
+    204: { description: "Wallet logged out" },
+    400: {
+      description: "Missing token",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    409: {
+      description: "Idempotency key conflict",
       content: { "application/json": { schema: ErrorBody } },
     },
   },
@@ -499,12 +567,15 @@ registry.registerPath({
   tags: ["Markets"],
   summary: "Get personalized market recommendations",
   security: [{ bearerAuth: [] }],
+  request: {
+    query: recommendationsQuerySchema,
+  },
   responses: {
     200: {
-      description: "Array of recommended markets",
+      description: "Paginated list of recommended markets",
       content: {
         "application/json": {
-          schema: z.object({ data: z.array(Market) }),
+          schema: z.object({ data: z.array(Market), nextCursor: z.string().nullable() }),
           examples: {
             recommendedMarkets: {
               value: {
@@ -521,6 +592,7 @@ registry.registerPath({
                     createdAt: "2026-03-01T09:00:00.000Z",
                   },
                 ],
+                nextCursor: null,
               },
             },
           },
@@ -550,13 +622,64 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/recommendations",
+  operationId: "getRecommendations",
+  tags: ["Markets"],
+  summary: "Get personalized market recommendations",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: recommendationsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Paginated list of recommended markets",
+      content: {
+        "application/json": {
+          schema: z.object({ data: z.array(Market), nextCursor: z.string().nullable() }),
+        },
+      },
+    },
+    401: {
+      description: "Unauthorized",
+      content: {
+        "application/json": {
+          schema: ErrorBody,
+        },
+      },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/markets",
   operationId: "listMarkets",
   tags: ["Markets"],
-  summary: "List all markets",
+  summary: "List all markets with cursor pagination",
+  description:
+    "Returns a cursor-paginated list of markets. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match on subsequent requests; if the page is unchanged " +
+    "the server responds 304 Not Modified (no body).",
+  request: {
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Array of markets",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: z.array(Market) }),
@@ -593,6 +716,13 @@ registry.registerPath({
         },
       },
     },
+    304: {
+      description: "Not Modified — page unchanged since the ETag in If-None-Match.",
+    },
+    400: {
+      description: "Invalid query parameters",
+      content: { "application/json": { schema: ErrorBody } },
+    },
   },
 });
 
@@ -602,6 +732,9 @@ registry.registerPath({
   operationId: "searchMarkets",
   tags: ["Markets"],
   summary: "Full-text search across markets",
+  description:
+    "Full-text search with fuzzy trigram fallback. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if results are unchanged the server responds 304 Not Modified.",
   request: {
     query: z.object({
       q: z.string().min(1),
@@ -609,10 +742,25 @@ registry.registerPath({
       offset: z.coerce.number().int().nonnegative().default(0).optional(),
       page: z.coerce.number().int().positive().optional(),
     }),
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when results are unchanged.",
+      }),
+    }),
   },
   responses: {
     200: {
       description: "Search results",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: MarketSearchResult,
@@ -656,6 +804,9 @@ registry.registerPath({
           },
         },
       },
+    },
+    304: {
+      description: "Not Modified — search results unchanged since the ETag in If-None-Match.",
     },
     400: {
       description: "Missing query parameter",
@@ -720,10 +871,30 @@ registry.registerPath({
   operationId: "getMarketById",
   tags: ["Markets"],
   summary: "Get a market by ID",
-  request: { params: z.object({ id: z.string() }) },
+  description:
+    "Returns a single market by ID. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if unchanged the server responds 304 Not Modified.",
+  request: {
+    params: z.object({ id: z.string() }),
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the market is unchanged.",
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Market",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: Market }),
@@ -746,6 +917,9 @@ registry.registerPath({
           },
         },
       },
+    },
+    304: {
+      description: "Not Modified — market unchanged since the ETag in If-None-Match.",
     },
     404: {
       description: "Not found",
@@ -915,13 +1089,21 @@ const MarketComment = z
 registry.registerPath({
   method: "get",
   path: "/api/markets/{id}/comments",
-  tags: ["Markets"],
+  tags: ["Markets", "Comments"],
   summary: "List comments for a market with cursor pagination",
+  description:
+    "Returns a cursor-paginated list of comments for the given market. The resolved `X-Correlation-Id` is echoed back in the response header.",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({
       limit: z.coerce.number().int().positive().optional().default(20),
       cursor: z.string().optional(),
+    }),
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is generated when absent.",
+      }),
     }),
   },
   responses: {
@@ -935,6 +1117,130 @@ registry.registerPath({
           }),
         },
       },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+  },
+});
+
+// ── /api/comments (root) ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/comments",
+  tags: ["Comments"],
+  summary: "List comments (root endpoint)",
+  description:
+    "Returns a paginated list of comments. The resolved `X-Correlation-Id` is echoed back in the response header.",
+  request: {
+    query: z.object({
+      limit: z.coerce.number().int().positive().max(100).optional(),
+      cursor: z.string().optional(),
+    }),
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is generated when absent.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated comments list",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: z.array(MarketComment),
+            nextCursor: z.string().nullable(),
+            message: z.string(),
+          }),
+        },
+      },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+  },
+});
+
+const CreateCommentRequest = z
+  .object({
+    marketId: z.string().min(1).openapi({ description: "Target market ID" }),
+    body: z
+      .string()
+      .min(1)
+      .max(2000)
+      .openapi({ description: "Comment body (max 2 000 chars)" }),
+    authorAddress: z
+      .string()
+      .optional()
+      .openapi({ description: "Stellar address of the author" }),
+    outboundUrl: z
+      .string()
+      .url()
+      .optional()
+      .openapi({
+        description:
+          "Optional webhook URL that receives a POST with the comment payload. X-Correlation-Id is forwarded automatically.",
+      }),
+  })
+  .openapi("CreateCommentRequest");
+
+const CreateCommentResponse = z
+  .object({
+    data: z.object({
+      id: z.string(),
+      marketId: z.string(),
+      body: z.string(),
+      authorAddress: z.string().nullable(),
+      createdAt: z.string().datetime(),
+    }),
+    message: z.string(),
+  })
+  .openapi("CreateCommentResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/api/comments",
+  tags: ["Comments"],
+  summary: "Create a comment",
+  description:
+    "Creates a new comment. When `outboundUrl` is provided the service posts the comment payload to that URL, forwarding `X-Correlation-Id` so the receiving system can correlate the call.",
+  request: {
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID propagated to the outbound webhook call.",
+      }),
+    }),
+    body: {
+      content: { "application/json": { schema: CreateCommentRequest } },
+    },
+  },
+  responses: {
+    201: {
+      description: "Comment created",
+      content: {
+        "application/json": { schema: CreateCommentResponse },
+      },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
     },
     400: {
       description: "Validation error",
@@ -1868,9 +2174,8 @@ registry.registerPath({
         .openapi({ description: "Page size (1–100, default 20)." }),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -1929,9 +2234,8 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   request: {
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when content is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2009,9 +2313,8 @@ registry.registerPath({
       limit: z.coerce.number().int().min(1).max(100).default(20),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2106,9 +2409,8 @@ registry.registerPath({
   request: {
     params: z.object({ stellarAddress: z.string() }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the profile is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2216,9 +2518,11 @@ const PredictionRow = z
 
 const PredictionsListResponse = z
   .object({
-    data: z.array(PredictionRow),
+    items: z.array(PredictionRow),
     /** Opaque cursor for the next page, or null if this is the last page. */
-    nextCursor: z.string().nullable(),
+    next_cursor: z.string().nullable(),
+    /** Optional total count for clients that need it. */
+    total: z.number().int().nonnegative().optional(),
   })
   .openapi("PredictionsListResponse");
 
@@ -2243,8 +2547,8 @@ registry.registerPath({
   description:
     "Returns a cursor-paginated list of predictions placed by the caller. " +
     "Sort order is `createdAt DESC, id DESC`. " +
-    "Pass the returned `nextCursor` as `?cursor=` to fetch the next page. " +
-    "`nextCursor` is `null` when no further pages exist.",
+    "Pass the returned `next_cursor` as `?cursor=` to fetch the next page. " +
+    "`next_cursor` is `null` when no further pages exist.",
   security: [{ bearerAuth: [] }],
   request: {
     query: z.object({
@@ -2254,7 +2558,7 @@ registry.registerPath({
       status: PredictionStatus.optional(),
       /** Filter by chosen outcome value (e.g. "yes" / "no"). */
       outcome: z.string().min(1).max(64).optional(),
-      /** Opaque cursor from the previous page\u2019s `nextCursor`. */
+      /** Opaque cursor from the previous page’s `next_cursor`. */
       cursor: z.string().optional(),
       /** Page size — default 20, max 100. */
       limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
@@ -2269,7 +2573,7 @@ registry.registerPath({
           examples: {
             authenticatedPredictionsPage: {
               value: {
-                data: [
+                items: [
                   {
                     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                     marketId: "market_123",
@@ -2283,7 +2587,7 @@ registry.registerPath({
                     resolutionTime: "2026-06-01T12:00:00.000Z",
                   },
                 ],
-                nextCursor: "cursor_abc123",
+                next_cursor: "cursor_abc123",
               },
             },
           },
@@ -2506,6 +2810,60 @@ const AdminUserView = z
     }),
   })
   .openapi("AdminUserView");
+
+const AdminRouteItem = z
+  .object({
+    id: z.string(),
+    method: z.enum(["DELETE", "GET", "PATCH", "POST"]),
+    path: z.string(),
+    summary: z.string(),
+  })
+  .openapi("AdminRouteItem");
+
+const AdminRouteListResponse = z
+  .object({
+    items: z.array(AdminRouteItem),
+    next_cursor: z.string().nullable(),
+    total: z.number().int(),
+  })
+  .openapi("AdminRouteListResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin",
+  operationId: "listAdminEndpoints",
+  tags: ["Admin"],
+  summary: "List available admin endpoints",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated admin endpoint catalog",
+      content: {
+        "application/json": {
+          schema: AdminRouteListResponse,
+        },
+      },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    422: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -3511,6 +3869,115 @@ registry.registerPath({
           },
         },
       },
+    },
+  },
+});
+
+// ── /api/referrals ───────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/referrals",
+  operationId: "createReferral",
+  tags: ["Referrals"],
+  summary: "Create a referral code",
+  description: "Creates a new referral code for the authenticated user.",
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            campaignId: z.string().optional(),
+          }),
+          examples: {
+            success: {
+              summary: "Create referral request",
+              value: {
+                campaignId: "FWC26",
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Referral created",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: z.object({
+              referralCode: z.string(),
+              message: z.string(),
+            }),
+          }),
+          examples: {
+            success: {
+              summary: "Referral code created successfully",
+              value: {
+                data: {
+                  referralCode: "REF-ABC-123",
+                  message: "Referral created successfully",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    401: {
+      description: "Missing or invalid JWT",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/referrals",
+  operationId: "listReferrals",
+  tags: ["Referrals"],
+  summary: "List user referrals",
+  description: "Lists all referrals made by the authenticated user.",
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: "List of referrals",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: z.array(
+              z.object({
+                id: z.string(),
+                referredUser: z.string(),
+                status: z.enum(["pending", "completed"]),
+                createdAt: z.string().datetime(),
+              })
+            ),
+          }),
+          examples: {
+            success: {
+              summary: "Referral list",
+              value: {
+                data: [
+                  {
+                    id: "ref-001",
+                    referredUser: "GD2...",
+                    status: "completed",
+                    createdAt: "2026-07-28T12:00:00Z",
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+    401: {
+      description: "Missing or invalid JWT",
+      content: { "application/json": { schema: ErrorBody } },
     },
   },
 });

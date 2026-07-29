@@ -71,9 +71,7 @@ export async function getReconciliationReport(
  * Get recent reconciliation reports (stub)
  */
 export async function listReconciliationReports(_limit: number = 10, _offset: number = 0) {
-  onChainAmount: string | null;
-  difference: string | null;
-  status: "match" | "mismatch" | "missing_on_chain" | "missing_in_db";
+  return [];
 }
 
 export interface ReconciliationSummary {

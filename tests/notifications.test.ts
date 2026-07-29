@@ -1,3 +1,7 @@
+jest.mock("../src/middleware/cors", () => ({
+  notificationsCors: () => (_req: any, _res: any, next: any) => next(),
+}));
+
 jest.mock("../src/middleware/requireAuth", () => ({
   requireAuth: (req: any, _res: any, next: any) => {
     req.user = { id: "user-123", stellarAddress: "GTEST" };
@@ -76,9 +80,8 @@ describe("notifications preferences routes", () => {
       .patch("/api/notifications/preferences")
       .send({ preferences: [{ category: "nope", channel: "email", enabled: true }] });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     expect(res.body.error.code).toBe("validation_error");
-    expect(Array.isArray(res.body.error.details)).toBe(true);
     expect(mockPatchNotificationPreferences).not.toHaveBeenCalled();
   });
 

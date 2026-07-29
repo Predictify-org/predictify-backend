@@ -14,15 +14,17 @@
  */
 
 import { Router } from "express";
+import { conditionalGet } from "../../middleware/etag";
 import { logger } from "../../config/logger";
-import { NotFoundError } from "../../errors";
 import { getRequestId } from "../../lib/requestContext";
-import { AuthenticatedRequest, requireAuth } from "../../middleware/auth";
+import { AuthenticatedRequest } from "../../middleware/auth";
+import { requireAuth } from "../../middleware/requireAuth";
 import {
   listMarketWatchers,
   addMarketWatcher,
   removeMarketWatcher,
 } from "../../services/marketWatcherService";
+import { NotFoundError } from "../../errors";
 import {
   marketParamsSchema,
   marketWatchersQuerySchema,
@@ -68,6 +70,15 @@ watchersRouter.get("/", async (req, res, next) => {
     logger.debug({ reqId, correlationId: reqId, marketId, limit, cursor }, "market_watchers_list_request");
 
     const result = await listMarketWatchers(marketId, { limit, cursor });
+    const payload = {
+      data: result.data,
+      nextCursor: result.nextCursor,
+      total: result.total,
+    };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
 
     logger.info(
       {
@@ -81,11 +92,7 @@ watchersRouter.get("/", async (req, res, next) => {
       "market_watchers_list_success",
     );
 
-    return res.status(200).json({
-      data: result.data,
-      nextCursor: result.nextCursor,
-      total: result.total,
-    });
+    return res.status(200).json(payload);
   } catch (err) {
     if (err instanceof NotFoundError) {
       logger.warn({ reqId, correlationId: reqId, marketId: req.params.id }, "market_watchers_not_found");

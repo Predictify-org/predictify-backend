@@ -1,7 +1,12 @@
 import { Router } from "express";
 import { accessLog } from "../middleware/accessLog";
+import { auditCors } from "../middleware/cors";
 
 export const auditRouter = Router();
+
+// Enforce CORS allowlist early so unapproved origins are rejected
+// before any processing (preflight responses cached via Access-Control-Max-Age).
+auditRouter.use(auditCors());
 
 // Apply structured access log middleware to all routes in this router
 auditRouter.use(accessLog);

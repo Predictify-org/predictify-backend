@@ -49,7 +49,8 @@
 import { createHash } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
+import { getRequestId, requestContextStorage } from "../lib/requestContext";
+import { getCorrelationId } from "./correlation";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -240,12 +241,20 @@ export function fingerprintMiddleware(
     // Attach to res.locals so route handlers and other middleware can read it.
     res.locals["fingerprint"] = fingerprint;
 
+    // Persist in AsyncLocalStorage so workers and background code can read it
+    // via `getFingerprint()` throughout the request lifecycle.
+    const store = requestContextStorage.getStore();
+    if (store) {
+      store.fingerprint = fingerprint;
+    }
+
     // Expose to caller for forensic correlation.
     res.setHeader(FINGERPRINT_HEADER, fingerprint);
 
     logger.debug(
       {
         reqId: getRequestId(),
+        correlationId: getCorrelationId(),
         fingerprint,
         method: inputs.method,
         path: inputs.path,
@@ -256,7 +265,7 @@ export function fingerprintMiddleware(
     // Fingerprint computation is best-effort — a failure must not block the
     // request.  Log the problem so it surfaces in monitoring.
     logger.warn(
-      { reqId: getRequestId(), err },
+      { reqId: getRequestId(), correlationId: getCorrelationId(), err },
       "request_fingerprint_error",
     );
   }

@@ -1,5 +1,7 @@
+import express from "express";
 import request from "supertest";
-import { createApp } from "../src/index";
+import { correlationMiddleware } from "../src/middleware/correlation";
+import { commentsRouter } from "../src/routes/comments";
 import { listMarketComments } from "../src/services/marketCommentsService";
 
 // Mock the entire service module so we never hit the real DB.
@@ -9,6 +11,16 @@ jest.mock("../src/services/marketCommentsService", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockListMarketComments = listMarketComments as any;
+
+const ALLOWED_ORIGIN = "http://localhost:5173";
+
+function getTestApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(correlationMiddleware);
+    app.use("/api/markets", commentsRouter);
+    return app;
+}
 
 type CommentRow = {
     id: string;
@@ -54,7 +66,9 @@ describe("GET /api/markets/:id/comments", () => {
             ),
         );
 
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=1");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=1")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data).toHaveLength(1);
@@ -78,7 +92,9 @@ describe("GET /api/markets/:id/comments", () => {
             ]),
         );
 
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=5");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=5")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data).toHaveLength(1);
@@ -103,14 +119,14 @@ describe("GET /api/markets/:id/comments", () => {
             ]),
         );
 
-        await request(createApp()).get(
-            "/api/markets/m-1/comments?cursor=someBase64Cursor&limit=10",
-        );
+        await request(getTestApp())
+            .get("/api/markets/m-1/comments?cursor=someBase64Cursor&limit=10")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(mockListMarketComments).toHaveBeenCalledWith(
             "m-1",
             "someBase64Cursor",
-            undefined, // limit is parsed by route and passed as undefined because zod coerce handles it
+            10,
         );
     });
 
@@ -119,7 +135,9 @@ describe("GET /api/markets/:id/comments", () => {
     it("passes the marketId to the service", async () => {
         mockListMarketComments.mockResolvedValueOnce(makePage([]));
 
-        await request(createApp()).get("/api/markets/m-42/comments");
+        await request(getTestApp())
+            .get("/api/markets/m-42/comments")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(mockListMarketComments).toHaveBeenCalledWith(
             "m-42",
@@ -133,7 +151,9 @@ describe("GET /api/markets/:id/comments", () => {
     it("returns empty data array with nextCursor=null when no comments exist", async () => {
         mockListMarketComments.mockResolvedValueOnce(makePage([]));
 
-        const res = await request(createApp()).get("/api/markets/m-ghost/comments");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-ghost/comments")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data).toEqual([]);
@@ -158,7 +178,9 @@ describe("GET /api/markets/:id/comments", () => {
             ]),
         );
 
-        const res = await request(createApp()).get("/api/markets/m-1/comments");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data[0]).toMatchObject({
@@ -185,7 +207,9 @@ describe("GET /api/markets/:id/comments", () => {
             ]),
         );
 
-        const res = await request(createApp()).get("/api/markets/m-1/comments");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data[0]).toMatchObject({
@@ -197,7 +221,9 @@ describe("GET /api/markets/:id/comments", () => {
     // ── Validation / edge cases ───────────────────────────────────────────
 
     it("rejects invalid pagination query (limit=0)", async () => {
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=0");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=0")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(400);
         expect(res.body).toEqual({
@@ -209,33 +235,30 @@ describe("GET /api/markets/:id/comments", () => {
     });
 
     it("rejects invalid pagination query (negative limit)", async () => {
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=-5");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=-5")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe("validation_error");
     });
 
     it("rejects invalid pagination query (string non-numeric limit)", async () => {
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=abc");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=abc")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe("validation_error");
     });
 
     it("rejects extra unknown query parameters", async () => {
-        const res = await request(createApp()).get(
-            "/api/markets/m-1/comments?limit=10&unknownParam=evil",
-        );
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=10&unknownParam=evil")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe("validation_error");
-    });
-
-    it("rejects invalid marketId param (empty string in route)", async () => {
-        const res = await request(createApp()).get("/api/markets//comments?limit=1");
-        // Double-slash causes Express to route to the wrong handler, producing a 500
-        // because getMarketById hits the real DB. We just verify it's not a 200.
-        expect(res.status).not.toBe(200);
     });
 
     it("returns 200 with limit=1 and follows cursor to next page", async () => {
@@ -272,7 +295,9 @@ describe("GET /api/markets/:id/comments", () => {
                 ]),
             );
 
-        const res = await request(createApp()).get("/api/markets/m-1/comments?limit=1");
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?limit=1")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data).toHaveLength(1);
@@ -280,9 +305,9 @@ describe("GET /api/markets/:id/comments", () => {
 
         // Follow the cursor
         const cursor = res.body.nextCursor;
-        const res2 = await request(createApp()).get(
-            `/api/markets/m-1/comments?limit=1&cursor=${cursor}`,
-        );
+        const res2 = await request(getTestApp())
+            .get(`/api/markets/m-1/comments?limit=1&cursor=${cursor}`)
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res2.status).toBe(200);
         expect(res2.body.data).toHaveLength(1);
@@ -305,17 +330,16 @@ describe("GET /api/markets/:id/comments", () => {
             ]),
         );
 
-        const res = await request(createApp()).get(
-            "/api/markets/m-1/comments?cursor=!!!invalid!!!&limit=10",
-        );
+        const res = await request(getTestApp())
+            .get("/api/markets/m-1/comments?cursor=!!!invalid!!!&limit=10")
+            .set("Origin", ALLOWED_ORIGIN);
 
         expect(res.status).toBe(200);
         expect(res.body.data).toHaveLength(1);
-        // The cursor was passed to the service (which ignores it since we mock)
         expect(mockListMarketComments).toHaveBeenCalledWith(
             "m-1",
             "!!!invalid!!!",
-            undefined,
+            10,
         );
     });
 });

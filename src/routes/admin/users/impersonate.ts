@@ -1,3 +1,35 @@
+/**
+ * admin/users/impersonate.ts
+ *
+ * POST /api/admin/users/:address/impersonate
+ *
+ * Allows an admin to obtain a short-lived access token that impersonates
+ * the target Stellar wallet address.
+ *
+ * Security:
+ *  - Requires a valid admin JWT (role: "admin") via requireAdmin middleware.
+ *  - Rate-limited to 60 requests per minute per admin token.
+ *  - Every call is double-audited: once in the global audit_logs table and
+ *    once in the admin_audit_log table keyed by target address.
+ *
+ * Circuit breaker:
+ *  - The downstream work (token signing + audit writes) is wrapped in a
+ *    named circuit breaker ("impersonate").
+ *  - CLOSED (normal): calls execute and failures are counted.
+ *  - OPEN (tripped): the breaker fast-fails immediately with HTTP 503 so
+ *    the admin UI / caller gets a clear signal that the downstream is
+ *    unhealthy rather than hanging for the full request timeout.
+ *  - HALF_OPEN (recovery probe): one trial call is allowed; a success
+ *    resets the breaker to CLOSED; a failure keeps it OPEN.
+ *
+ * HTTP status codes:
+ *  - 200 OK            impersonation succeeded; body: { data: { token } }
+ *  - 400 Bad Request   address param is blank / whitespace-only
+ *  - 403 Forbidden     missing/invalid/non-admin JWT
+ *  - 429 Too Many Requests  rate limit exceeded
+ *  - 503 Service Unavailable  circuit is OPEN; body: { error: { code: "service_unavailable", retryAfterMs } }
+ */
+
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
@@ -8,11 +40,21 @@ import { getRequestId } from "../../../lib/requestContext";
 import { logger } from "../../../config/logger";
 import { db } from "../../../db/client";
 import { adminAuditLog } from "../../../db/schema";
+import {
+  getCircuitBreaker,
+  CircuitOpenError,
+  type CircuitBreakerOptions,
+} from "../../../lib/circuitBreaker";
 
 export interface AdminImpersonateRouterOptions {
   /** Requests per minute per admin token. Default: 60 */
   rateLimitPerMinute?: number;
+  /** Circuit breaker configuration for downstream calls. */
+  circuitBreaker?: CircuitBreakerOptions;
 }
+
+/** Name used to identify the impersonate circuit breaker in logs and snapshots. */
+export const IMPERSONATE_CIRCUIT_NAME = "impersonate";
 
 const paramsSchema = z.object({
   address: z.string().trim().min(1),
@@ -23,6 +65,9 @@ export function createAdminImpersonateRouter(
 ): Router {
   const router = Router();
   const limit = opts.rateLimitPerMinute ?? 60;
+
+  // Lazily instantiated so tests can inject custom thresholds via opts.
+  const breaker = getCircuitBreaker(IMPERSONATE_CIRCUIT_NAME, opts.circuitBreaker);
 
   router.use(
     rateLimit({
@@ -39,9 +84,10 @@ export function createAdminImpersonateRouter(
   router.use(requireAdmin);
 
   router.post("/:address/impersonate", async (req, res, next) => {
+    const reqId = getRequestId() ?? (req as { id?: string }).id ?? "unknown";
+
     try {
       const parsed = paramsSchema.safeParse(req.params);
-      const reqId = getRequestId() ?? (req as { id?: string }).id ?? "unknown";
 
       if (!parsed.success) {
         res.status(400).json({
@@ -57,40 +103,63 @@ export function createAdminImpersonateRouter(
       const targetAddress = parsed.data.address;
       const adminAddress = req.adminAddress!;
 
-      // 1. Audit log in global auditLogs
-      await createAuditLog({
-        action: "admin.impersonate",
-        walletAddress: adminAddress,
-        ip: req.ip ?? "unknown",
-        correlationId: reqId,
-      });
-
-      // 2. Audit log in adminAuditLog specific to target address
-      await db.insert(adminAuditLog).values({
-        adminAddress,
-        action: "impersonate",
-        targetAddress,
-      });
-
-      // 3. Structured logging with correlation IDs
-      logger.info(
-        {
-          adminAddress,
-          targetAddress,
+      // Wrap all downstream I/O in the circuit breaker.
+      // If the breaker is OPEN this throws CircuitOpenError immediately
+      // (before any network or DB call is attempted).
+      const token = await breaker.fire(async () => {
+        // 1. Audit log in global audit_logs
+        await createAuditLog({
+          action: "admin.impersonate",
+          walletAddress: adminAddress,
+          ip: req.ip ?? "unknown",
           correlationId: reqId,
-        },
-        "Admin impersonated user",
-      );
+          beforeState: null,
+          afterState: { targetAddress, role: "user" },
+        });
 
-      // 4. Generate token
-      const token = signAccessToken({ sub: targetAddress, role: "user" });
+        // 2. Audit log in admin_audit_log keyed by target address
+        await db.insert(adminAuditLog).values({
+          adminAddress,
+          action: "impersonate",
+          targetAddress,
+        });
 
-      res.status(200).json({
-        data: {
-          token,
-        },
+        // 3. Structured logging with correlation IDs
+        logger.info(
+          {
+            adminAddress,
+            targetAddress,
+            correlationId: reqId,
+          },
+          "Admin impersonated user",
+        );
+
+        // 4. Generate the impersonation token
+        return signAccessToken({ sub: targetAddress, role: "user" });
       });
+
+      res.status(200).json({ data: { token } });
     } catch (err) {
+      if (err instanceof CircuitOpenError) {
+        const retryAfterMs = breaker.snapshot().halfOpenAfterMs;
+        logger.warn(
+          {
+            circuitName: IMPERSONATE_CIRCUIT_NAME,
+            openedAt: err.openedAt,
+            reqId,
+          },
+          "impersonate_circuit_open",
+        );
+        res.status(503).json({
+          error: {
+            code: "service_unavailable",
+            message: "Impersonate service is temporarily unavailable. Please retry later.",
+            retryAfterMs,
+            requestId: reqId,
+          },
+        });
+        return;
+      }
       next(err);
     }
   });

@@ -65,6 +65,7 @@ import { env } from "../../config/env";
 import { logger } from "../../config/logger";
 import { getRequestId } from "../../lib/requestContext";
 import { conditionalGet } from "../../middleware/etag";
+import { securityHeaders } from "../../middleware/securityHeaders";
 import { indexerService } from "../../services/indexerService";
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -182,6 +183,8 @@ export function createIndexerHealthRouter(deps: IndexerHealthRouterDeps = {}): R
   const probeDb: ProbeDatabaseFn = deps.probeDatabase ?? defaultProbeDatabase;
   const probeRpc: ProbeSorobanRpcFn = deps.probeSorobanRpc ?? defaultProbeSorobanRpc;
   const router = Router();
+
+  router.use(securityHeaders);
 
   router.get("/health", async (req, res, next) => {
     const reqId = getRequestId();

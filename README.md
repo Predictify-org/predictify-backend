@@ -47,6 +47,7 @@ Once running:
 | `GET /healthz/dependencies` | None | Shallow dependency probe — Postgres, Soroban RPC, Horizon, webhook queue (Redis). Cached for 5 s. Returns 200/207/503. |
 | `GET /api/health/ready` | None | **Deep readiness check** — runs four parallel probes with 1-second timeouts each. Returns 200 when ready, 503 when unready. |
 | `GET /api/indexer/health` | None | Indexer health — probes external dependencies (Postgres + Soroban RPC) and compares the persisted cursor against the chain tip. Returns `"ok"` / `"degraded"` / `"down"` with dependency statuses in `dependencies` and lag data in `data`. Always HTTP 200. Supports [ETag / conditional GET](#etag--conditional-get-caching). |
+| `GET /api/recommendations/health` | None | Recommendations subsystem health — probes the two runtime dependencies the recommendations pipeline relies on (Postgres + Soroban RPC). Returns 200 when all pass, 503 when any is down. Response shape mirrors `GET /api/predictions/health`. |
 
 ### `GET /api/health/ready` response
 
@@ -104,6 +105,50 @@ Behavior:
 - Webhook routes may opt into a larger limit of `1mb`.
 - Requests exceeding the configured limit return HTTP `413` with the standard error envelope, including correlation and request IDs.
 
+## Per-user concurrency limit
+
+All `/api` routes are protected by a per-user in-flight request cap provided by `src/middleware/perUserConcurrency.ts`.
+
+**What it limits:** the number of *concurrent* (simultaneously in-flight) requests from a single identity — not throughput over a time window.  This prevents a single misbehaving client from holding many long-lived connections open and exhausting the server's thread pool or database connection pool.
+
+**Identity resolution:**
+1. `req.user.id` — set by `requireAuth` / `optionalAuth`
+2. `req.user.stellarAddress` — fallback from the same middlewares
+3. First hop of `X-Forwarded-For` / `req.socket.remoteAddress` — anonymous callers
+
+**When the limit is exceeded:**
+
+```
+HTTP 429 Too Many Requests
+Retry-After: 1
+```
+
+```json
+{
+  "error": {
+    "code": "concurrency_limit_exceeded",
+    "message": "Too many concurrent requests",
+    "retryAfter": 1
+  }
+}
+```
+
+**Configuration** (`MAX_CONCURRENT_REQUESTS_PER_USER`, default `10`):
+
+```bash
+# .env
+MAX_CONCURRENT_REQUESTS_PER_USER=10
+```
+
+**Advanced use** — create a custom instance with a different limit for a specific route group:
+
+```ts
+import { createPerUserConcurrencyMiddleware } from "./middleware/perUserConcurrency";
+router.use(createPerUserConcurrencyMiddleware({ limit: 3 }));
+```
+
+> **Multi-process note:** The counter is in-process only.  In a clustered deployment each process enforces the limit independently, so the effective cap across N processes is `N × MAX_CONCURRENT_REQUESTS_PER_USER`.  For single-process deployments (the standard Docker Compose setup) the limit is exact.
+
 ## Indexer gap scan
 
 The gap-scan worker detects missing ledger ranges in `indexer_events` between the durable cursor and chain tip, emits `indexer_gap_detected_total{from,to}`, and self-heals via `backfillRange`:
@@ -146,6 +191,14 @@ scripts/       dev helpers (check-drizzle-drift.ts)
 .github/
   workflows/   CI pipeline (lint, test, drift check, migrate)
 ```
+
+## Feature Flags
+
+The public feature-flags endpoint returns the current flag state for client consumption:
+
+- **`GET /api/feature-flags`** — returns `{ data: { FLAG: { enabled, metadata? }, ... }, correlationId }`. Optional query params: `environment` and `clientVersion`.
+
+A **5-second per-request timeout** is enforced. Requests that exceed it receive `HTTP 504` with `{ error: { code: "gateway_timeout", ... } }`. The handler uses cooperative cancellation via `AbortSignal` so in-flight work is abandoned cleanly. See [docs/feature-flags.md](docs/feature-flags.md) for the full runbook.
 
 ## Global Leaderboard
 
@@ -225,6 +278,16 @@ npm test -- tests/refreshToken.test.ts
 
 The refresh-token test suite covers rotation, expiry handling, reuse detection, logout family revocation, and hash-only storage.
 
+## Comments API
+
+Market comments are exposed at:
+
+- **`GET /api/markets/:id/comments`** — cursor-paginated comments for a market (`limit`, `cursor` params)
+- **`GET /api/comments`** — root list endpoint
+- **`POST /api/comments`** — create a comment; supply `outboundUrl` to dispatch a webhook
+
+Every handler generates or preserves an `X-Correlation-Id`, sanitises it (strips characters outside `[A-Za-z0-9\-_]`, max 128 chars), stores it in AsyncLocalStorage, echoes it in the response header, and propagates it to any outbound HTTP call via `fetchWithCorrelationId`. See [docs/comments-api.md](docs/comments-api.md) for the full runbook.
+
 ## Social graph
 
 Follow graph mutations are exposed at:
@@ -268,6 +331,63 @@ You can spin up the entire Predictify stack (API, Indexer, and PostgreSQL) using
 *   **Security:** By using `USER node` and `slim` base images, we reduce the attack surface.
 *   **Resilience:** The `depends_on` condition using `service_healthy` or `service_completed_successfully` ensures the database is ready and migrations are applied before application services boot, preventing race conditions.
 *   **Supply-Chain:** The base image is pinned by a specific digest. **Important:** When you run this, verify the digest matches your local build requirements, or update it to the latest `node:20-bookworm-slim` digest if you prefer the absolute latest patch version.
+
+## Structured Access Logging
+
+The API emits structured JSON access logs for several route groups via the `accessLog` middleware (`src/middleware/accessLog.ts`).
+
+### Logged routes
+
+| Route prefix      | Log name                |
+|-------------------|-------------------------|
+| `/api/users`      | `users_access_log`      |
+| `/api/auth`       | `auth_access_log`       |
+| `/api/predictions`| `predictions_access_log`|
+| `/api/markets`    | `markets_access_log`    |
+| `/api/tags`       | `tags_access_log`       |
+| `/api/feature-flags` | `feature_flags_access_log` |
+| `/api/referrals`  | `referrals_access_log`  |
+| `/api/admin`      | `admin_access_log`      |
+
+### Log fields
+
+Every access-log entry contains:
+
+| Field          | Type   | Description |
+|----------------|--------|-------------|
+| `req-id`       | string | Correlation / request ID (same as `correlationId`) |
+| `correlationId`| string | Resolved via `X-Correlation-Id` → `X-Request-Id` → `req.id` → new UUID |
+| `method`       | string | HTTP verb (GET, POST, etc.) |
+| `path`         | string | Request path (no query string) |
+| `statusCode`   | number | Final HTTP response status |
+| `status`       | number | Alias for `statusCode` |
+| `durationMs`   | number | Wall-clock response time in ms |
+| `latency`      | number | Alias for `durationMs` |
+| `ip`           | string | Client IP (X-Forwarded-For or direct) |
+| `size`         | number | Response body size in bytes (`Content-Length` or 0) |
+| `actor`        | string | Authenticated actor ID or `"anonymous"` |
+
+### Actor resolution
+
+- **Admin routes** (`/api/admin/*`): uses `req.adminAddress` (set by `requireAdmin` middleware after JWT verification with `role: "admin"`)
+- **User routes**: uses `req.user.id`
+- **Unauthenticated requests**: logged as `"anonymous"`
+
+### Correlation IDs
+
+The `X-Correlation-Id` response header is echoed back for every logged request. The resolution priority chain is:
+
+1. `X-Correlation-Id` request header (sanitised: alphanumeric + `-_` only, max 128 chars)
+2. `X-Request-Id` request header
+3. `req.id` (set by `pino-http`)
+4. Fresh UUID v4 (guaranteed fallback)
+
+### Security
+
+- Only `req.path` is logged (no query strings or full URLs)
+- `req.headers.authorization` and `req.headers.cookie` are redacted by the logger
+- Actor information is limited to a stable identifier (Stellar address or user ID)
+- Correlation IDs from clients are sanitised to prevent log injection
 
 ## License
 

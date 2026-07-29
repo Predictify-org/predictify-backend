@@ -46,7 +46,7 @@ module.exports = {
     "^.*/config/redis$": "<rootDir>/src/config/redis.ts",
     "^.*/cache/marketsCache$": "<rootDir>/src/cache/marketsCache.ts",
   },
-  testMatch: ["**/tests/**/*.test.ts"],
+  testMatch: ["**/tests/**/*.test.ts", "**/src/__tests__/**/*.test.ts"],
   globals: {
     "ts-jest": {
       // Use the test-specific tsconfig so ts-jest can find both src/ and

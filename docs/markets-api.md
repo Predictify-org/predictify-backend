@@ -101,9 +101,14 @@ and `Cache-Control: no-cache` header, and a matching `If-None-Match` header
 returns `304 Not Modified` with no body. A `404` response does not include an
 `ETag` header.
 
-## `GET /api/markets/recommendations`
+## `GET /api/markets/recommendations` / `GET /api/recommendations`
 
-Returns personalized market recommendations for the authenticated user.
+Returns personalized market recommendations for the authenticated user using keyset cursor pagination over `(created_at DESC, id DESC)`.
+
+### Query Parameters
+
+- `limit` *(optional, integer, default: 20, min: 1, max: 100)* – Number of items per page.
+- `cursor` *(optional, string)* – Opaque cursor token from the previous page's `nextCursor`.
 
 ### Authentication
 
@@ -124,11 +129,14 @@ Authorization: Bearer <token>
       "id": "market-1",
       "question": "Will BTC close above $100k this quarter?",
       "status": "active",
-      "resolutionTime": "2026-07-01T00:00:00.000Z"
+      "resolutionTime": "2026-07-01T00:00:00.000Z",
+      "createdAt": "2026-06-01T00:00:00.000Z"
     }
-  ]
+  ],
+  "nextCursor": "v1|24|2026-06-01T00:00:00.000Zmarket-1"
 }
 ```
+
 
 The endpoint excludes markets the user has already predicted on, prefers active
 non-archived markets related to terms from the user's prediction history, and

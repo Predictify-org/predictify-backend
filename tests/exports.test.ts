@@ -327,3 +327,108 @@ describe("GET /api/exports/predictions", () => {
     expect(mockOffset.mock.calls[1][0]).toBe(500);
   });
 });
+
+describe("POST and PATCH /api/exports mutations with Idempotency-Key", () => {
+  it("POST /api/exports/predictions with Idempotency-Key replays response on match", async () => {
+    const key = "post-idemp-key-999";
+    const body = { format: "json" };
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+
+    mockLimit.mockReset();
+    // requireAuth user lookup
+    mockLimit.mockResolvedValueOnce([{ id: TEST_USER_ID, stellarAddress: TEST_STELLAR }]);
+    // Idempotency lookup hit
+    mockLimit.mockResolvedValueOnce([
+      {
+        key,
+        fingerprint,
+        responseStatus: 200,
+        responseBody: [{ id: "pred-post-cached" }],
+        responseHeaders: { "content-type": "application/json" },
+        expiresAt: new Date(Date.now() + 10000),
+      },
+    ]);
+
+    const res = await request(app)
+      .post("/api/exports/predictions")
+      .set("Authorization", `Bearer ${signToken()}`)
+      .set("Idempotency-Key", key)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["idempotent-replayed"]).toBe("true");
+    expect(res.body[0].id).toBe("pred-post-cached");
+  });
+
+  it("POST /api/exports/predictions returns 409 conflict when request body changes", async () => {
+    const key = "post-idemp-key-999";
+    const body = { format: "csv" };
+
+    mockLimit.mockReset();
+    mockLimit.mockResolvedValueOnce([{ id: TEST_USER_ID, stellarAddress: TEST_STELLAR }]);
+    mockLimit.mockResolvedValueOnce([
+      {
+        key,
+        fingerprint: "old-different-fingerprint",
+        responseStatus: 200,
+        responseBody: [],
+        responseHeaders: {},
+        expiresAt: new Date(Date.now() + 10000),
+      },
+    ]);
+
+    const res = await request(app)
+      .post("/api/exports/predictions")
+      .set("Authorization", `Bearer ${signToken()}`)
+      .set("Idempotency-Key", key)
+      .send(body);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("idempotency_conflict");
+    expect(res.body.error.message).toBe("Idempotency key conflict");
+    expect(res.body.error.correlationId).toBeDefined();
+  });
+
+  it("PATCH /api/exports/predictions with Idempotency-Key replays response on match", async () => {
+    const key = "patch-idemp-key-777";
+    const body = { format: "csv" };
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+
+    mockLimit.mockReset();
+    mockLimit.mockResolvedValueOnce([{ id: TEST_USER_ID, stellarAddress: TEST_STELLAR }]);
+    mockLimit.mockResolvedValueOnce([
+      {
+        key,
+        fingerprint,
+        responseStatus: 200,
+        responseBody: "id,marketId\npred-1,mkt-1",
+        responseHeaders: { "content-type": "text/csv" },
+        expiresAt: new Date(Date.now() + 10000),
+      },
+    ]);
+
+    const res = await request(app)
+      .patch("/api/exports/predictions")
+      .set("Authorization", `Bearer ${signToken()}`)
+      .set("Idempotency-Key", key)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["idempotent-replayed"]).toBe("true");
+    expect(res.text).toContain("pred-1,mkt-1");
+  });
+
+  it("POST /api/exports returns 400 for invalid idempotency key format with error envelope", async () => {
+    const res = await request(app)
+      .post("/api/exports")
+      .set("Authorization", `Bearer ${signToken()}`)
+      .set("Idempotency-Key", "invalid-key-with-invalid-chars-\u0000")
+      .send({ format: "json" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("invalid_idempotency_key");
+    expect(res.body.error.message).toBe("Invalid idempotency key format");
+    expect(res.body.error.correlationId).toBeDefined();
+  });
+});
+

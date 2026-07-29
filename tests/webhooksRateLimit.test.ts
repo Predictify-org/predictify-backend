@@ -20,9 +20,20 @@ import {
 } from "../src/middleware/rateLimit";
 import { createAuditLog } from "../src/services/auditService";
 
+const requireAdminMock = jest.fn(
+  (req: Request, _res: Response, next: express.NextFunction) => {
+    req.user = USER_A;
+    next();
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Mocks — keep parity with auditRateLimit.test.ts
 // ---------------------------------------------------------------------------
+
+jest.mock("../src/middleware/requireAdmin", () => ({
+  requireAdmin: requireAdminMock,
+}));
 
 jest.mock("../src/db/client", () => ({
   db: {
@@ -38,6 +49,12 @@ jest.mock("../src/config/logger", () => ({
     warn: jest.fn(),
     debug: jest.fn(),
     error: jest.fn(),
+  },
+}));
+
+jest.mock("../src/middleware/cors", () => ({
+  webhookCors: () => (_req: Request, _res: Response, next: express.NextFunction) => {
+    next();
   },
 }));
 
@@ -273,14 +290,6 @@ describe("webhooksRouter rate-limit gate (requireAuth mocked)", () => {
     mockInsert.mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) } as any);
   });
 
-  // Stub `requireAuth` so the route handler runs without a real JWT / DB.
-  jest.doMock("../src/middleware/requireAuth", () => ({
-    requireAuth: (req: Request, _res: Response, next: express.NextFunction) => {
-      req.user = USER_A;
-      next();
-    },
-  }));
-
   // `db` queries inside webhooksRouter would fail without a full DB mock — we
   // only care about the rate-limit layer sitting *before* the handlers, so
   // short-circuit the DB calls at the module level.
@@ -343,12 +352,24 @@ describe("webhooksRouter rate-limit gate (requireAuth mocked)", () => {
 
   it("applies the per-user limiter before handlers run", async () => {
     const { webhooksRouter } = await import("../src/routes/webhooks");
+    const middlewareRouter = express.Router();
+
+    webhooksRouter.stack.forEach((layer: any) => {
+      if (!layer.route) {
+        middlewareRouter.use(layer.handle);
+      }
+    });
+
+    middlewareRouter.get("/", (_req, res) => {
+      res.json({ ok: true });
+    });
+
     const app = express();
     app.use(express.json());
+
     // Swap in a tighter limiter so tests don't need 100 requests
     const tightLimiter = createUserRateLimiter({ limit: 2, windowMs: 60_000 });
-    app.use("/api/webhooks", tightLimiter);
-    app.use("/api/webhooks", webhooksRouter);
+    app.use("/api/webhooks", tightLimiter, middlewareRouter);
 
     await request(app).get("/api/webhooks").expect(200);
     await request(app).get("/api/webhooks").expect(200);

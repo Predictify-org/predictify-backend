@@ -2,9 +2,9 @@
  * Unit tests for POST /api/admin/reindex
  *
  * All external I/O is mocked:
- *   - indexerService  (getChainTip, backfillRange)
- *   - db              (auditLogs insert)
- *   - adminReindexTotal Prometheus counter
+ *   - indexerService          (getCursor, getChainTip, backfillRange)
+ *   - auditService            (createAuditLog)
+ *   - adminReindexTotal       Prometheus counter
  *
  * The test app is assembled with a low rate-limit cap so the 429 path can be
  * exercised without hammering a real limiter.
@@ -17,16 +17,17 @@ import request from "supertest";
 // ── Mock: indexerService ─────────────────────────────────────────────────────
 jest.mock("../src/services/indexerService", () => ({
   indexerService: {
+    getCursor: jest.fn(),
     getChainTip: jest.fn(),
     backfillRange: jest.fn(),
   },
 }));
 
-// ── Mock: Drizzle db (audit log insert) ───────────────────────────────────────
-const mockInsert = jest.fn().mockReturnValue({
-  values: jest.fn().mockResolvedValue(undefined),
-});
-jest.mock("../src/db", () => ({ db: { insert: mockInsert } }));
+// ── Mock: auditService ────────────────────────────────────────────────────────
+const mockCreateAuditLog = jest.fn().mockResolvedValue("test-correlation-id");
+jest.mock("../src/services/auditService", () => ({
+  createAuditLog: (...args: unknown[]) => mockCreateAuditLog(...args),
+}));
 
 // ── Mock: Prometheus counter ──────────────────────────────────────────────────
 const mockInc = jest.fn();
@@ -84,11 +85,10 @@ function makeApp(rateLimitPerMinute = 60): express.Express {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockedIndexerService.getCursor.mockResolvedValue(50);
   mockedIndexerService.getChainTip.mockResolvedValue(200);
   mockedIndexerService.backfillRange.mockResolvedValue(undefined);
-  // Re-wire the insert chain after clearAllMocks
-  const valuesStub = jest.fn().mockResolvedValue(undefined);
-  mockInsert.mockReturnValue({ values: valuesStub });
+  mockCreateAuditLog.mockResolvedValue("test-correlation-id");
 });
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
@@ -162,15 +162,14 @@ describe("POST /api/admin/reindex", () => {
     expect(res.status).toBe(200);
     expect(mockedIndexerService.getChainTip).toHaveBeenCalledTimes(1);
     expect(mockedIndexerService.backfillRange).toHaveBeenCalledWith(42, 200);
-    expect(res.body).toEqual({
-      data: {
-        from: 42,
-        to: 200,
-      },
-    });
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        data: { from: 42, to: 200 },
+      }),
+    );
   });
 
-  it("echoes the x-request-id header in the response", async () => {
+  it("echoes the correlation-id in the response header", async () => {
     const res = await request(makeApp())
       .post("/api/admin/reindex")
       .set("Authorization", `Bearer ${adminJwt}`)
@@ -178,40 +177,50 @@ describe("POST /api/admin/reindex", () => {
       .send({ ledger: 10 });
 
     expect(res.status).toBe(200);
-    expect(res.headers["x-request-id"]).toBe("trace-xyz");
+    // The route sets x-correlation-id (CORRELATION_ID_HEADER), not x-request-id
+    expect(res.headers["x-correlation-id"]).toBe("trace-xyz");
   });
 
   it("records the correct IP in the audit log (single forwarded-for value)", async () => {
-    const valuesStub = jest.fn().mockResolvedValue(undefined);
-    mockInsert.mockReturnValue({ values: valuesStub });
-
     await request(makeApp())
       .post("/api/admin/reindex")
       .set("Authorization", `Bearer ${adminJwt}`)
       .set("X-Forwarded-For", "203.0.113.5")
       .send({ ledger: 1 });
 
-    expect(valuesStub).toHaveBeenCalledWith(
+    expect(mockCreateAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ ip: "203.0.113.5" }),
     );
   });
 
   it("writes a structured audit log entry on success", async () => {
-    const valuesStub = jest.fn().mockResolvedValue(undefined);
-    mockInsert.mockReturnValue({ values: valuesStub });
-
     await request(makeApp())
       .post("/api/admin/reindex")
       .set("Authorization", `Bearer ${adminJwt}`)
       .set("X-Request-Id", "audit-req")
       .send({ ledger: 100 });
 
-    expect(mockInsert).toHaveBeenCalledTimes(1);
-    expect(valuesStub).toHaveBeenCalledWith(
+    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockCreateAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "admin.reindex",
         walletAddress: ADMIN_ADDR,
         correlationId: "audit-req",
+      }),
+    );
+  });
+
+  it("includes beforeState and afterState in the audit log entry", async () => {
+    // cursor = 50 (from mock), chainTip = 200 (from mock), from = 42
+    await request(makeApp())
+      .post("/api/admin/reindex")
+      .set("Authorization", `Bearer ${adminJwt}`)
+      .send({ ledger: 42 });
+
+    expect(mockCreateAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        beforeState: { cursor: 50, from: 42 },
+        afterState: { cursor: 200, from: 42, to: 200 },
       }),
     );
   });
@@ -264,7 +273,7 @@ describe("error propagation", () => {
     // The global errorHandler turns unhandled errors into 500.
     expect(res.status).toBe(500);
     // No audit log or counter should be written when the backfill fails.
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
     expect(mockInc).not.toHaveBeenCalled();
   });
 
@@ -277,7 +286,7 @@ describe("error propagation", () => {
       .send({ ledger: 1 });
 
     expect(res.status).toBe(500);
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
     expect(mockInc).not.toHaveBeenCalled();
   });
 });

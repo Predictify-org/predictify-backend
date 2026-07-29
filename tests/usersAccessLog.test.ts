@@ -254,7 +254,7 @@ describe("accessLog middleware", () => {
 
   // ── Structured log on finish ───────────────────────────────────────────
 
-  it("emits a users_access_log entry on response finish with required fields", async () => {
+  it("emits a users_access_log entry on response finish with all required fields", async () => {
     const req = makeReq({
       headers: { "x-correlation-id": "log-test-id" },
       method: "GET",
@@ -269,12 +269,17 @@ describe("accessLog middleware", () => {
 
     expect(loggerInfoSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        "req-id": "log-test-id",
         correlationId: "log-test-id",
         method: "GET",
         path: "/api/users/me",
         statusCode: 200,
+        status: 200,
         ip: "10.0.0.1",
         durationMs: expect.any(Number),
+        latency: expect.any(Number),
+        size: 0,
+        actor: "anonymous",
       }),
       "users_access_log",
     );
@@ -491,6 +496,86 @@ describe("accessLog middleware", () => {
     expect(loggerInfoSpy).toHaveBeenCalledWith(
       expect.objectContaining({ ip: "unknown" }),
       "users_access_log",
+    );
+  });
+
+  // ── Content-Length / size ──────────────────────────────────────────────
+
+  it("logs the Content-Length when set on the response", async () => {
+    const req = makeReq({ headers: { "x-correlation-id": "size-test-id" } });
+    const res = makeRes();
+    res.setHeader("Content-Length", "512");
+    const next: NextFunction = jest.fn();
+
+    accessLog(req, res, next);
+    await fireFinish(res);
+
+    expect(loggerInfoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ size: 512 }),
+      "users_access_log",
+    );
+  });
+
+  it("logs size=0 when Content-Length is absent", async () => {
+    const req = makeReq({ headers: { "x-correlation-id": "no-size-id" } });
+    const res = makeRes();
+    const next: NextFunction = jest.fn();
+
+    accessLog(req, res, next);
+    await fireFinish(res);
+
+    expect(loggerInfoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ size: 0 }),
+      "users_access_log",
+    );
+  });
+
+  // ── Actor extraction ───────────────────────────────────────────────────
+
+  it("logs the authenticated actor when req.user is set", async () => {
+    const req = makeReq({
+      headers: { "x-correlation-id": "actor-test-id" },
+      method: "POST",
+      path: "/api/users/me",
+    });
+    (req as any).user = { id: "authenticated-user-id" };
+    const res = makeRes();
+    const next: NextFunction = jest.fn();
+
+    accessLog(req, res, next);
+    await fireFinish(res);
+
+    expect(loggerInfoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: "authenticated-user-id" }),
+      "users_access_log",
+    );
+  });
+
+  // ── referrals_access_log ──────────────────────────────────────────────
+
+  it("emits a referrals_access_log entry when originalUrl starts with /api/referrals", async () => {
+    const req = makeReq({
+      headers: { "x-correlation-id": "ref-log-test-id" },
+      method: "POST",
+      path: "/api/referrals",
+      ip: "10.0.0.5",
+    });
+    const res = makeRes();
+    const next: NextFunction = jest.fn();
+
+    accessLog(req, res, next);
+    await fireFinish(res);
+
+    expect(loggerInfoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        correlationId: "ref-log-test-id",
+        method: "POST",
+        path: "/api/referrals",
+        statusCode: 200,
+        ip: "10.0.0.5",
+        durationMs: expect.any(Number),
+      }),
+      "referrals_access_log",
     );
   });
 });

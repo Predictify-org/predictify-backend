@@ -135,3 +135,74 @@ export function marketsCors(): ReturnType<typeof createCorsAllowlistMiddleware> 
   }
   return marketsCorsMiddleware;
 }
+
+/**
+ * Pre-configured CORS middleware for the notifications endpoint.
+ * Reads allowed origins from the `NOTIFICATIONS_CORS_ALLOWED_ORIGINS` env variable.
+ * When the allowlist is empty, all cross-origin requests to /api/notifications are denied.
+ */
+let notificationsCorsMiddleware: ReturnType<typeof createCorsAllowlistMiddleware> | null = null;
+
+export function notificationsCors(): ReturnType<typeof createCorsAllowlistMiddleware> {
+  if (!notificationsCorsMiddleware) {
+    const raw = env.NOTIFICATIONS_CORS_ALLOWED_ORIGINS ?? "";
+    const allowedOrigins = raw
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
+    notificationsCorsMiddleware = createCorsAllowlistMiddleware({
+      allowedOrigins,
+      allowCredentials: true,
+      maxAgeSeconds: 600,
+    });
+  }
+  return notificationsCorsMiddleware;
+}
+
+/**
+ * Pre-configured CORS middleware for the stats endpoint.
+ * Reads allowed origins from the `STATS_CORS_ALLOWED_ORIGINS` env variable.
+ * When the allowlist is empty, all cross-origin requests to /api/stats are denied.
+ */
+let statsCorsMiddleware: ReturnType<typeof createCorsAllowlistMiddleware> | null = null;
+
+export function statsCors(): ReturnType<typeof createCorsAllowlistMiddleware> {
+  if (!statsCorsMiddleware) {
+    const raw = env.STATS_CORS_ALLOWED_ORIGINS ?? "";
+    const allowedOrigins = raw
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
+    statsCorsMiddleware = createCorsAllowlistMiddleware({
+      allowedOrigins,
+      allowCredentials: true,
+      maxAgeSeconds: 600,
+    });
+  }
+  return statsCorsMiddleware;
+}
+
+export const enforceCors = marketsCors();
+
+/**
+ * Pre-configured CORS middleware for the audit endpoint.
+ * Reads allowed origins from the `AUDIT_CORS_ALLOWED_ORIGINS` env variable.
+ * When the allowlist is empty, all cross-origin requests to /api/audit are denied.
+ */
+let auditCorsMiddleware: ReturnType<typeof createCorsAllowlistMiddleware> | null = null;
+
+export function auditCors(): ReturnType<typeof createCorsAllowlistMiddleware> {
+  if (!auditCorsMiddleware) {
+    const raw = env.AUDIT_CORS_ALLOWED_ORIGINS ?? "";
+    const allowedOrigins = raw
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
+    auditCorsMiddleware = createCorsAllowlistMiddleware({
+      allowedOrigins,
+      allowCredentials: true,
+      maxAgeSeconds: 600,
+    });
+  }
+  return auditCorsMiddleware;
+}

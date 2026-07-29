@@ -22,6 +22,12 @@
  *   middleware/etag.ts).
  * - The `If-None-Match` header is stripped of quotes before comparison.
  * - No authentication is required — this is a public read-only endpoint.
+ *
+ * ## Metrics
+ *
+ * Every request (including ones rejected by rate limiting) is observed in
+ * the `stats_request_duration_seconds` Prometheus histogram, labeled by
+ * `route` and `status`. See metrics/statsMetrics.ts and metrics/registry.ts.
  */
 
 import { Router } from "express";
@@ -30,8 +36,17 @@ import { getGlobalStats } from "../services/statsService";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { rateLimitAnon } from "../middleware/rateLimitAnon";
+import { statsMetricsMiddleware } from "../metrics/statsMetrics";
+import { statsCors } from "../middleware/cors";
 
 export const statsRouter = Router();
+
+// Apply CORS middleware
+statsRouter.use(statsCors());
+
+// Latency histogram — registered first so rate-limited (429) requests are
+// also observed, not just successful responses. See metrics/statsMetrics.ts.
+statsRouter.use(statsMetricsMiddleware);
 
 // Anonymous rate limiting — public endpoint that issues multiple DB queries.
 // A conservative cap prevents abuse while being generous enough for dashboards.

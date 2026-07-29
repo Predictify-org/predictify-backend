@@ -98,7 +98,7 @@ function mockDbReturnsUser(): void {
   ]);
 }
 
-describe("GET /api/markets/recommendations", () => {
+describe("GET /api/markets/recommendations & /api/recommendations", () => {
   let app: express.Express;
 
   beforeAll(() => {
@@ -118,12 +118,15 @@ describe("GET /api/markets/recommendations", () => {
     expect(res.body.error.code).toBe("unauthenticated");
   });
 
-  it("returns 200 with recommendations for authenticated user", async () => {
+  it("returns 200 with recommendations and nextCursor for authenticated user", async () => {
     mockDbReturnsUser();
     const mockRecs = [
-      { id: "m-1", question: "Market 1", status: "active", resolutionTime: "2026-01-01T00:00:00.000Z" }
+      { id: "m-1", question: "Market 1", status: "active", resolutionTime: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" }
     ];
-    mockGetRecommendedMarkets.mockResolvedValueOnce(mockRecs);
+    mockGetRecommendedMarkets.mockResolvedValueOnce({
+      data: mockRecs,
+      nextCursor: "v1|24|2026-01-01T00:00:00.000Zm-1",
+    });
 
     const res = await request(app)
       .get("/api/markets/recommendations")
@@ -131,12 +134,61 @@ describe("GET /api/markets/recommendations", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual(mockRecs);
-    expect(mockGetRecommendedMarkets).toHaveBeenCalledWith(TEST_USER_ID);
+    expect(res.body.nextCursor).toBe("v1|24|2026-01-01T00:00:00.000Zm-1");
+    expect(mockGetRecommendedMarkets).toHaveBeenCalledWith(TEST_USER_ID, {
+      limit: 20,
+      cursor: undefined,
+    });
   });
 
-  it("returns 200 with empty list when no recommendations found", async () => {
+  it("passes limit and cursor query params to getRecommendedMarkets", async () => {
     mockDbReturnsUser();
-    mockGetRecommendedMarkets.mockResolvedValueOnce([]);
+    const mockRecs = [
+      { id: "m-2", question: "Market 2", status: "active", resolutionTime: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" }
+    ];
+    const cursor = "v1|24|2026-01-01T00:00:00.000Zm-1";
+    mockGetRecommendedMarkets.mockResolvedValueOnce({
+      data: mockRecs,
+      nextCursor: null,
+    });
+
+    const res = await request(app)
+      .get(`/api/markets/recommendations?limit=5&cursor=${encodeURIComponent(cursor)}`)
+      .set("Authorization", `Bearer ${signToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(mockRecs);
+    expect(res.body.nextCursor).toBeNull();
+    expect(mockGetRecommendedMarkets).toHaveBeenCalledWith(TEST_USER_ID, {
+      limit: 5,
+      cursor,
+    });
+  });
+
+  it("returns 400 when invalid query parameters are supplied", async () => {
+    mockDbReturnsUser();
+    const res = await request(app)
+      .get("/api/markets/recommendations?limit=invalid")
+      .set("Authorization", `Bearer ${signToken()}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when unknown query parameters are supplied (.strict())", async () => {
+    mockDbReturnsUser();
+    const res = await request(app)
+      .get("/api/markets/recommendations?foo=bar")
+      .set("Authorization", `Bearer ${signToken()}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 200 with empty list and null nextCursor when no recommendations found", async () => {
+    mockDbReturnsUser();
+    mockGetRecommendedMarkets.mockResolvedValueOnce({
+      data: [],
+      nextCursor: null,
+    });
 
     const res = await request(app)
       .get("/api/markets/recommendations")
@@ -144,5 +196,7 @@ describe("GET /api/markets/recommendations", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
+    expect(res.body.nextCursor).toBeNull();
   });
 });
+

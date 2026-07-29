@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
+import { logger } from "../config/logger";
 import { conditionalGet } from "../middleware/etag";
 import { createPerUserRateLimiter } from "../middleware/rateLimit";
 import {
@@ -20,7 +22,79 @@ import {
   authWalletLogoutBodySchema,
 } from "../validators/auth";
 
+let activeAuthRequests = 0;
+let isAuthDraining = false;
+
+/**
+ * Sets the graceful drain flag for /api/auth routes.
+ * When active, new requests are rejected with 503 Service Unavailable.
+ */
+export function setAuthDraining(draining: boolean): void {
+  isAuthDraining = draining;
+  logger.info({ isAuthDraining }, "auth_draining_state_updated");
+}
+
+/**
+ * Returns the count of currently in-flight /api/auth requests.
+ */
+export function getActiveAuthRequestsCount(): number {
+  return activeAuthRequests;
+}
+
+/**
+ * Waits for all in-flight /api/auth requests to finish or until timeout.
+ */
+export async function waitForAuthDrain(timeoutMs = 5000): Promise<void> {
+  if (activeAuthRequests === 0) return;
+  const start = Date.now();
+  logger.info({ activeAuthRequests }, "waiting_for_auth_requests_drain");
+  while (activeAuthRequests > 0) {
+    if (Date.now() - start > timeoutMs) {
+      logger.warn({ activeAuthRequests }, "auth_drain_timeout_exceeded");
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 export const authRouter = Router();
+
+// ── Graceful shutdown drain middleware ──────────────────────────────────────
+authRouter.use((req, res, next) => {
+  const correlationId =
+    (req.headers["x-correlation-id"] as string) ??
+    (typeof (req as { id?: unknown }).id === "string" ? (req as { id?: string }).id : undefined) ??
+    randomUUID();
+
+  if (isAuthDraining) {
+    logger.warn(
+      { correlationId, path: req.path, method: req.method },
+      "auth_request_rejected_during_drain",
+    );
+    res.status(503).json({
+      error: {
+        code: "service_unavailable",
+        message: "Server is shutting down",
+        correlationId,
+      },
+    });
+    return;
+  }
+
+  activeAuthRequests++;
+  let finished = false;
+  const cleanup = () => {
+    if (!finished) {
+      finished = true;
+      activeAuthRequests = Math.max(0, activeAuthRequests - 1);
+    }
+  };
+
+  res.once("finish", cleanup);
+  res.once("close", cleanup);
+  next();
+});
+
 authRouter.use(accessLog);
 authRouter.use(requestTimeout(15000));
 

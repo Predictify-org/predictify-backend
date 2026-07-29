@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { logger } from "../config/logger";
 
 export interface RequestTimeoutOptions {
   /** HTTP status code to send when the timeout is exceeded. Defaults to 408. */
@@ -19,8 +20,14 @@ export interface RequestTimeoutOptions {
  * `abortableRace`) once the deadline is reached or the client disconnects,
  * instead of forcibly killing the underlying operation.
  *
+ * When the timeout fires a structured warning is emitted at `logger.warn` with:
+ *   - `correlationId` — echoed from `res.locals.correlationId` (or "unknown")
+ *   - `timeoutMs`     — the configured deadline
+ *   - `path`          — `req.originalUrl` for easier log queries
+ *   - `method`        — HTTP method
+ *
  * @param timeoutMs - Time in milliseconds before the request times out
- * @param options - Overrides for the status code / error code / message sent on timeout
+ * @param options   - Overrides for the status code / error code / message sent on timeout
  */
 export function requestTimeout(timeoutMs: number, options: RequestTimeoutOptions = {}) {
   const {
@@ -50,8 +57,21 @@ export function requestTimeout(timeoutMs: number, options: RequestTimeoutOptions
 
       settled = true;
       abort();
+
       if (!res.headersSent) {
+        // Structured warning so ops tooling / dashboards can alert on
+        // request_timeout_exceeded events by path and configured deadline.
         const correlationId = (res.locals.correlationId as string) || "unknown";
+        logger.warn(
+          {
+            correlationId,
+            timeoutMs,
+            path: req.originalUrl,
+            method: req.method,
+          },
+          "request_timeout_exceeded",
+        );
+
         res.status(statusCode).json({
           error: {
             code,

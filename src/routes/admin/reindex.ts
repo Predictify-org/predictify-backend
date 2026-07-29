@@ -34,8 +34,7 @@ import { CORRELATION_ID_HEADER } from "../../lib/http";
 import { getCorrelationId } from "../../middleware/correlation";
 import { indexerService } from "../../services/indexerService";
 import { adminReindexTotal } from "../../metrics/registry";
-import { db } from "../../db";
-import { auditLogs } from "../../db/schema";
+import { createAuditLog } from "../../services/auditService";
 
 // ── Validation schema ────────────────────────────────────────────────────────
 
@@ -134,6 +133,11 @@ export function createAdminReindexRouter(
 
       const { ledger: from } = parsed.data;
 
+      // ── Before-state snapshot ─────────────────────────────────────────────
+      // Capture cursor position prior to the backfill so the audit row shows
+      // the full before→after transition.
+      const previousCursor = await indexerService.getCursor();
+
       // ── Backfill ─────────────────────────────────────────────────────────
       // getChainTip() goes to Soroban RPC; backfillRange() is chunked and
       // writes to indexer_events with ON CONFLICT DO NOTHING (idempotent).
@@ -142,15 +146,16 @@ export function createAdminReindexRouter(
 
       // ── Audit log ─────────────────────────────────────────────────────────
       // Written after the backfill so a failed backfill produces no audit row.
-      // The `ip` column is NOT NULL — fall back to "unknown" for programmatic
-      // callers that omit forwarding headers.
+      // beforeState / afterState capture the cursor transition for forensic
+      // traceability.
       const ip = extractClientIp(req as Parameters<typeof extractClientIp>[0]);
-      await db.insert(auditLogs).values({
+      await createAuditLog({
         action: "admin.reindex",
-        walletAddress: req.adminAddress ?? null,
+        walletAddress: req.adminAddress ?? undefined,
         ip,
         correlationId,
-        rateLimitContext: null,
+        beforeState: { cursor: previousCursor, from },
+        afterState: { cursor: to, from, to },
       });
 
       // ── Metrics & structured log ──────────────────────────────────────────

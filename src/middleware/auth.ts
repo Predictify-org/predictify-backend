@@ -1,5 +1,6 @@
   
   
+export { requireAuth } from "./requireAuth";
 import type { Request, Response, NextFunction } from "express";
 import { env } from "../config/env";
 import { verifyAccessToken } from "../services/jwtService";

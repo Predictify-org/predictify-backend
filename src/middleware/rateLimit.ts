@@ -30,8 +30,8 @@ import {
   createAuditLog,
   type RateLimitContext,
 } from "../services/auditService";
-import { logger } from "../config/logger";
 import { env } from "../config/env";
+import { logger } from "../config/logger";
 
 declare global {
   namespace Express {
@@ -62,6 +62,14 @@ export interface TokenBucketRateLimitOptions {
 }
 
 function getClientIp(req: Request): string {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim().length > 0) {
+    const firstHop = xff.split(",")[0]?.trim();
+    if (firstHop?.length > 0) {
+      return firstHop;
+    }
+  }
+
   return req.socket?.remoteAddress ?? "unknown";
 }
 
@@ -135,8 +143,10 @@ function attachTokenBucketContext(
 }
 
 function getAuthenticatedUserKey(req: Request): string | undefined {
-  const authenticatedRequest = req as AuthenticatedRequest;
+  const authenticatedRequest = req as AuthenticatedRequest & { adminAddress?: string };
   const identity =
+    authenticatedRequest.adminAddress ??
+    authenticatedRequest.user?.stellarAddress ??
     authenticatedRequest.user?.address ??
     authenticatedRequest.user?.sub ??
     authenticatedRequest.user?.id;
@@ -146,6 +156,22 @@ function getAuthenticatedUserKey(req: Request): string | undefined {
   }
 
   return `user:${identity.trim()}`;
+}
+
+export function getUserRateKey(req: Request): string {
+  return getAuthenticatedUserKey(req) ?? `ip:${getClientIp(req)}`;
+}
+
+function getWalletAddress(req: Request): string | null {
+  const authenticatedRequest = req as AuthenticatedRequest & { adminAddress?: string };
+  return (
+    authenticatedRequest.adminAddress ??
+    authenticatedRequest.user?.stellarAddress ??
+    authenticatedRequest.user?.address ??
+    authenticatedRequest.user?.sub ??
+    authenticatedRequest.user?.id ??
+    null
+  );
 }
 
 export function createRateLimiter(
@@ -169,8 +195,19 @@ export function createRateLimiter(
       const retryAfter = getRetryAfter(res, windowMs);
 
       res.setHeader("Retry-After", String(retryAfter));
+      const walletAddress = getWalletAddress(req) ?? undefined;
+      logger.warn(
+        {
+          ip: getClientIp(req),
+          correlationId,
+          walletAddress,
+          rateLimitContext: context,
+        },
+        "rate_limit_blocked",
+      );
       void createAuditLog({
         action: "rate_limit.blocked",
+        walletAddress,
         ip: getClientIp(req),
         correlationId,
         rateLimitContext: context,
@@ -219,7 +256,7 @@ export function createPerUserTokenBucketLimiter(
     const key =
       typeof overrideKey === "string" && overrideKey.trim().length > 0
         ? overrideKey
-        : (getAuthenticatedUserKey(req) ?? `ip:${getClientIp(req)}`);
+        : getUserRateKey(req);
 
     const now = Date.now();
     const bucket = buckets.get(key) ?? {
@@ -253,8 +290,19 @@ export function createPerUserTokenBucketLimiter(
       );
 
       const context = attachTokenBucketContext(req, 0, capacity, resetAt, true);
+      const walletAddress = getWalletAddress(req) ?? undefined;
+      logger.warn(
+        {
+          ip: getClientIp(req),
+          correlationId: req.correlationId,
+          walletAddress,
+          rateLimitContext: context,
+        },
+        "rate_limit_blocked",
+      );
       void createAuditLog({
         action: "rate_limit.blocked",
+        walletAddress,
         ip: getClientIp(req),
         correlationId: req.correlationId,
         rateLimitContext: context,
@@ -309,9 +357,9 @@ export function createUserRateLimiter(options: Partial<Options> = {}): RateLimit
     limit: 100,
     keyGenerator: (req) => {
       const authReq = req as AuthenticatedRequest;
-      const address = authReq.user?.address ?? authReq.user?.sub;
+      const address = authReq.user?.stellarAddress ?? authReq.user?.address ?? authReq.user?.sub;
       if (typeof address === "string" && address.trim().length > 0) {
-        return `user:${address}`;
+        return `user:${address.trim()}`;
       }
       return `ip:${getClientIp(req)}`;
     },
@@ -325,7 +373,17 @@ export function createUserRateLimiter(options: Partial<Options> = {}): RateLimit
  * Reads `WEBHOOKS_RATE_LIMIT_WINDOW_MS` and `WEBHOOKS_RATE_LIMIT_MAX` from
  * the environment; defaults to 100 requests per 15 minutes per user.
  */
-export const webhooksRateLimiter = createPerUserRateLimiter({
-  windowMs: env.WEBHOOKS_RATE_LIMIT_WINDOW_MS,
-  limit: env.WEBHOOKS_RATE_LIMIT_MAX,
+export const webhooksRateLimiter = createPerUserTokenBucketLimiter({
+  capacity: env.WEBHOOKS_RATE_LIMIT_MAX,
+  refillWindowMs: env.WEBHOOKS_RATE_LIMIT_WINDOW_MS,
+  keyGenerator: getUserRateKey,
+});
+
+/**
+ * Pre-configured per-user rate limiter for `/api/fingerprint` route.
+ */
+export const fingerprintRateLimiter = createPerUserTokenBucketLimiter({
+  capacity: env.FINGERPRINT_RATE_LIMIT_CAPACITY,
+  refillWindowMs: env.FINGERPRINT_RATE_LIMIT_WINDOW_MS,
+  keyGenerator: getUserRateKey,
 });

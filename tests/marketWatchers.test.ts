@@ -120,6 +120,53 @@ describe("GET /api/markets/:id/watchers", () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("validation_error");
   });
+
+  // ── ETag / conditional GET ─────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    mockListMarketWatchers.mockResolvedValueOnce({
+      data: [{ id: "w-1", marketId: "mkt-1", userId: "u-1", stellarAddress: "GABC123", createdAt: "2026-07-25T10:00:00.000Z" }],
+      nextCursor: null,
+      total: 1,
+    });
+
+    const res = await request(app).get("/mkt-1/watchers");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    mockListMarketWatchers.mockResolvedValue({
+      data: [{ id: "w-1", marketId: "mkt-1", userId: "u-1", stellarAddress: "GABC123", createdAt: "2026-07-25T10:00:00.000Z" }],
+      nextCursor: null,
+      total: 1,
+    });
+
+    const first = await request(app).get("/mkt-1/watchers");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(app)
+      .get("/mkt-1/watchers")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    mockListMarketWatchers.mockResolvedValueOnce({
+      data: [{ id: "w-1", marketId: "mkt-1", userId: "u-1", stellarAddress: "GABC123", createdAt: "2026-07-25T10:00:00.000Z" }],
+      nextCursor: null,
+      total: 1,
+    });
+
+    const res = await request(app)
+      .get("/mkt-1/watchers")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
+  });
 });
 
 describe("POST /api/markets/:id/watchers", () => {

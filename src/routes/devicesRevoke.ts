@@ -1,26 +1,30 @@
 import { Router } from "express";
-import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { refreshTokens } from "../db/schema";
 import { requireAuth } from "../middleware/requireAuth";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { logger } from "../config/logger";
 import { RouteErrorFactory } from "../errors";
+import { securityHeaders } from "../middleware/securityHeaders";
 
-const paramsSchema = z.object({ id: z.string().uuid({ message: "invalid device id" }) });
+const deviceIdParamSchema = z.object({ id: z.string().uuid({ message: "invalid device id" }) });
 
 export const devicesRevokeRouter = Router({ mergeParams: true });
 
+// Apply security headers first — ensures CSP, X-Content-Type-Options, and
+// Referrer-Policy are present on every response including 401/403s.
+devicesRevokeRouter.use(securityHeaders);
 devicesRevokeRouter.use(requireAuth);
 
 devicesRevokeRouter.post(
   "/",
   async (req: AuthenticatedRequest, res, next) => {
     try {
-      const parsed = paramsSchema.safeParse(req.params);
+      const parsed = deviceIdParamSchema.safeParse(req.params);
       if (!parsed.success) {
-        throw RouteErrorFactory.validation(parsed.error.issues[0]?.message ?? "invalid device id");
+        throw parsed.error;
       }
 
       const userId = req.user!.id;

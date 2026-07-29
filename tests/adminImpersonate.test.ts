@@ -8,13 +8,14 @@ jest.mock("../src/services/jwtService");
 jest.mock("../src/services/auditService");
 jest.mock("../src/db/client", () => ({ db: { insert: jest.fn().mockReturnValue({ values: jest.fn().mockResolvedValue({}) }) } }));
 
-import { signAccessToken } from "../src/services/jwtService";
+import { signAccessToken, verifyAccessToken } from "../src/services/jwtService";
 import { createAuditLog } from "../src/services/auditService";
 
 const mockSignAccessToken = signAccessToken as jest.MockedFunction<typeof signAccessToken>;
+const mockVerifyAccessToken = verifyAccessToken as jest.MockedFunction<typeof verifyAccessToken>;
 const mockCreateAuditLog = createAuditLog as jest.MockedFunction<typeof createAuditLog>;
 
-const SECRET = process.env.JWT_SECRET || "test-jwt-secret-at-least-32-bytes-long-000000";
+const SECRET = process.env.JWT_SECRET ?? "test-jwt-secret-that-is-at-least-32-chars!";
 const ISSUER = process.env.JWT_ISSUER || "predictify";
 const AUDIENCE = process.env.JWT_AUDIENCE || "predictify-app";
 
@@ -39,6 +40,11 @@ function makeApp(rateLimitPerMinute = 60): express.Express {
 describe("POST /api/admin/users/:address/impersonate", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockVerifyAccessToken.mockImplementation((token: string) => {
+      const decoded = jwt.decode(token) as any;
+      if (!decoded) throw new Error("invalid token");
+      return decoded;
+    });
   });
 
   it("returns 403 with no Authorization header", async () => {
@@ -80,6 +86,8 @@ describe("POST /api/admin/users/:address/impersonate", () => {
       expect.objectContaining({
         action: "admin.impersonate",
         walletAddress: ADMIN_ADDRESS,
+        beforeState: null,
+        afterState: { targetAddress: USER_ADDRESS, role: "user" },
       })
     );
   });

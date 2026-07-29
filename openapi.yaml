@@ -232,6 +232,23 @@ components:
         - correlationId
         - checkedAt
         - dependencies
+    HealthVersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+        commitSha:
+          type: string
+        correlationId:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+      required:
+        - version
+        - commitSha
+        - correlationId
+        - checkedAt
     Market:
       type: object
       properties:
@@ -330,6 +347,93 @@ components:
           minimum: 0
       required:
         - expectedVersion
+    MarketComment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+        authorId:
+          type: string
+          nullable: true
+          format: uuid
+        authorAddress:
+          type: string
+          nullable: true
+        body:
+          type: string
+        moderationFlagged:
+          type: boolean
+        moderationReason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - marketId
+        - authorId
+        - authorAddress
+        - body
+        - moderationFlagged
+        - moderationReason
+        - createdAt
+    CreateCommentResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+            marketId:
+              type: string
+            body:
+              type: string
+            authorAddress:
+              type: string
+              nullable: true
+            createdAt:
+              type: string
+              format: date-time
+          required:
+            - id
+            - marketId
+            - body
+            - authorAddress
+            - createdAt
+        message:
+          type: string
+      required:
+        - data
+        - message
+    CreateCommentRequest:
+      type: object
+      properties:
+        marketId:
+          type: string
+          minLength: 1
+          description: Target market ID
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Comment body (max 2 000 chars)
+        authorAddress:
+          type: string
+          description: Stellar address of the author
+        outboundUrl:
+          type: string
+          format: uri
+          description: >-
+            Optional webhook URL that receives a POST with the comment payload. X-Correlation-Id is forwarded
+            automatically.
+      required:
+        - marketId
+        - body
     PredictionCountResponse:
       type: object
       properties:
@@ -353,6 +457,40 @@ components:
             - cached
       required:
         - data
+    ClaimResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            predictionId:
+              type: string
+            result:
+              type: string
+              nullable: true
+            claimTxHash:
+              type: string
+              nullable: true
+            claimedAt:
+              type: string
+              nullable: true
+              format: date-time
+          required:
+            - predictionId
+            - result
+            - claimTxHash
+            - claimedAt
+      required:
+        - data
+    ClaimRequest:
+      type: object
+      properties:
+        marketId:
+          type: string
+          minLength: 1
+      required:
+        - marketId
+      additionalProperties: false
     LeaderboardEntry:
       type: object
       properties:
@@ -789,16 +927,19 @@ components:
     PredictionsListResponse:
       type: object
       properties:
-        data:
+        items:
           type: array
           items:
             $ref: '#/components/schemas/PredictionRow'
-        nextCursor:
+        next_cursor:
           type: string
           nullable: true
+        total:
+          type: integer
+          minimum: 0
       required:
-        - data
-        - nextCursor
+        - items
+        - next_cursor
     FollowResult:
       type: object
       properties:
@@ -813,6 +954,43 @@ components:
         - follower
         - followee
         - followedAt
+    AdminRouteItem:
+      type: object
+      properties:
+        id:
+          type: string
+        method:
+          type: string
+          enum:
+            - DELETE
+            - GET
+            - PATCH
+            - POST
+        path:
+          type: string
+        summary:
+          type: string
+      required:
+        - id
+        - method
+        - path
+        - summary
+    AdminRouteListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRouteItem'
+        next_cursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+      required:
+        - items
+        - next_cursor
+        - total
     AdminUserView:
       type: object
       properties:
@@ -957,6 +1135,53 @@ components:
       required:
         - totalCount
         - byAction
+    AuditLogEntry:
+      type: object
+      description: A single audit log entry for a wallet address.
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          description: Action identifier, e.g. "auth.login" or "market.create"
+        walletAddress:
+          type: string
+          nullable: true
+          description: Stellar wallet address of the actor
+        ip:
+          type: string
+          description: IP address of the originating request
+        correlationId:
+          type: string
+          description: Correlation ID for cross-log tracing
+        rateLimitContext:
+          nullable: true
+          description: Optional rate-limit snapshot at request time
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - action
+        - ip
+        - correlationId
+        - createdAt
+    UserAuditPage:
+      type: object
+      description: A paginated page of audit log entries for a single user.
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        nextCursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page, or null if this is the last page.
+      required:
+        - data
+        - nextCursor
     PluginView:
       type: object
       properties:
@@ -1539,6 +1764,15 @@ paths:
       tags:
         - Auth
       summary: Request a sign-in challenge nonce
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            description: Unique idempotency key for safe retries. See RFC 7231 §6.3.2.
+          required: true
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
@@ -1566,12 +1800,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidationErrorBody'
+        '409':
+          description: Idempotency key conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/auth/verify:
     post:
       operationId: authVerify
       tags:
         - Auth
       summary: Verify challenge signature and obtain JWT
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            description: Unique idempotency key for safe retries. See RFC 7231 §6.3.2.
+          required: true
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
@@ -1607,12 +1856,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Idempotency key conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/auth/refresh:
     post:
       operationId: authRefresh
       tags:
         - Auth
       summary: Rotate a refresh token
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            description: Unique idempotency key for safe retries. See RFC 7231 §6.3.2.
+          required: true
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
@@ -1652,12 +1916,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Idempotency key conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/auth/logout:
     post:
       operationId: authLogout
       tags:
         - Auth
       summary: Revoke the entire refresh-token family
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            description: Unique idempotency key for safe retries. See RFC 7231 §6.3.2.
+          required: true
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
@@ -1672,6 +1951,51 @@ paths:
           description: Logged out
         '400':
           description: Missing token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Idempotency key conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/auth/wallet/logout:
+    post:
+      operationId: authWalletLogout
+      tags:
+        - Auth
+      summary: Revoke the entire refresh-token family for wallet logout
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            description: Unique idempotency key for safe retries. See RFC 7231 §6.3.2.
+          required: true
+          name: Idempotency-Key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+            examples:
+              walletLogoutRequest:
+                value:
+                  refreshToken: refresh-token-001
+      responses:
+        '204':
+          description: Wallet logged out
+        '400':
+          description: Missing token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Idempotency key conflict
           content:
             application/json:
               schema:
@@ -1698,6 +2022,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthHealthResponse'
+  /api/health/version:
+    get:
+      operationId: healthVersion
+      tags:
+        - Health
+      summary: Application version and build info
+      description: >-
+        Returns the application version (from package.json) and the current Git commit SHA (from GIT_COMMIT_SHA or
+        VERCEL_GIT_COMMIT_SHA env vars, falling back to 'unknown'). No authentication required.
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthVersionResponse'
   /api/markets/recommendations:
     get:
       operationId: getMarketRecommendations
@@ -1706,9 +2046,24 @@ paths:
       summary: Get personalized market recommendations
       security:
         - bearerAuth: []
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            maxLength: 512
+          required: false
+          name: cursor
+          in: query
       responses:
         '200':
-          description: Array of recommended markets
+          description: Paginated list of recommended markets
           content:
             application/json:
               schema:
@@ -1718,8 +2073,12 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Market'
+                  nextCursor:
+                    type: string
+                    nullable: true
                 required:
                   - data
+                  - nextCursor
               examples:
                 recommendedMarkets:
                   value:
@@ -1732,6 +2091,7 @@ paths:
                           resolutionSource: official
                         version: 1
                         createdAt: '2026-03-01T09:00:00.000Z'
+                    nextCursor: null
         '401':
           description: Unauthorized
           content:
@@ -1744,15 +2104,82 @@ paths:
                     error:
                       code: unauthorized
                       requestId: req_abc123
+  /api/recommendations:
+    get:
+      operationId: getRecommendations
+      tags:
+        - Markets
+      summary: Get personalized market recommendations
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            maxLength: 512
+          required: false
+          name: cursor
+          in: query
+      responses:
+        '200':
+          description: Paginated list of recommended markets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Market'
+                  nextCursor:
+                    type: string
+                    nullable: true
+                required:
+                  - data
+                  - nextCursor
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/markets:
     get:
       operationId: listMarkets
       tags:
         - Markets
-      summary: List all markets
+      summary: List all markets with cursor pagination
+      description: >-
+        Returns a cursor-paginated list of markets. Supports strong ETag / conditional GET: send the ETag back as
+        If-None-Match on subsequent requests; if the page is unchanged the server responds 304 Not Modified (no body).
+      parameters:
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when the page is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Array of markets
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -1784,12 +2211,23 @@ paths:
                           resolutionSource: community
                         version: 2
                         createdAt: '2026-02-14T07:30:00.000Z'
+        '304':
+          description: Not Modified — page unchanged since the ETag in If-None-Match.
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/markets/search:
     get:
       operationId: searchMarkets
       tags:
         - Markets
       summary: Full-text search across markets
+      description: >-
+        Full-text search with fuzzy trigram fallback. Supports strong ETag / conditional GET: send the ETag back as
+        If-None-Match; if results are unchanged the server responds 304 Not Modified.
       parameters:
         - schema:
             type: string
@@ -1820,9 +2258,25 @@ paths:
           required: false
           name: page
           in: query
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when results are unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Search results
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -1856,6 +2310,8 @@ paths:
                       page: 1
                       total: 1
                       fallback: false
+        '304':
+          description: Not Modified — search results unchanged since the ETag in If-None-Match.
         '400':
           description: Missing query parameter
           content:
@@ -1912,15 +2368,34 @@ paths:
       tags:
         - Markets
       summary: Get a market by ID
+      description: >-
+        Returns a single market by ID. Supports strong ETag / conditional GET: send the ETag back as If-None-Match; if
+        unchanged the server responds 304 Not Modified.
       parameters:
         - schema:
             type: string
           required: true
           name: id
           in: path
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when the market is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Market
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -1942,6 +2417,8 @@ paths:
                         resolutionSource: official
                       version: 1
                       createdAt: '2026-01-10T12:00:00.000Z'
+        '304':
+          description: Not Modified — market unchanged since the ETag in If-None-Match.
         '404':
           description: Not found
           content:
@@ -2035,6 +2512,171 @@ paths:
                     error:
                       code: conflict
                       requestId: req_abc123
+  /api/markets/{id}/comments:
+    get:
+      tags:
+        - Markets
+        - Comments
+      summary: List comments for a market with cursor pagination
+      description: >-
+        Returns a cursor-paginated list of comments for the given market. The resolved `X-Correlation-Id` is echoed back
+        in the response header.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            description: >-
+              Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is
+              generated when absent.
+          required: false
+          name: x-correlation-id
+          in: header
+      responses:
+        '200':
+          description: Paginated comments list
+          headers:
+            x-correlation-id:
+              schema:
+                type: string
+                description: Resolved correlation ID, echoed back to the caller.
+              required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MarketComment'
+                  nextCursor:
+                    type: string
+                    nullable: true
+                required:
+                  - data
+                  - nextCursor
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+  /api/comments:
+    get:
+      tags:
+        - Comments
+      summary: List comments (root endpoint)
+      description: Returns a paginated list of comments. The resolved `X-Correlation-Id` is echoed back in the response header.
+      parameters:
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+            maximum: 100
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            description: >-
+              Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is
+              generated when absent.
+          required: false
+          name: x-correlation-id
+          in: header
+      responses:
+        '200':
+          description: Paginated comments list
+          headers:
+            x-correlation-id:
+              schema:
+                type: string
+                description: Resolved correlation ID, echoed back to the caller.
+              required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MarketComment'
+                  nextCursor:
+                    type: string
+                    nullable: true
+                  message:
+                    type: string
+                required:
+                  - data
+                  - nextCursor
+                  - message
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+    post:
+      tags:
+        - Comments
+      summary: Create a comment
+      description: >-
+        Creates a new comment. When `outboundUrl` is provided the service posts the comment payload to that URL,
+        forwarding `X-Correlation-Id` so the receiving system can correlate the call.
+      parameters:
+        - schema:
+            type: string
+            description: Client-supplied correlation ID propagated to the outbound webhook call.
+          required: false
+          name: x-correlation-id
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommentRequest'
+      responses:
+        '201':
+          description: Comment created
+          headers:
+            x-correlation-id:
+              schema:
+                type: string
+                description: Resolved correlation ID, echoed back to the caller.
+              required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCommentResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
   /api/markets/{id}/prediction-count:
     get:
       operationId: getMarketPredictionCount
@@ -2092,6 +2734,52 @@ paths:
                     error:
                       code: not_found
                       requestId: req_abc123
+  /api/predictions/claim:
+    post:
+      tags:
+        - Predictions
+      summary: Claim winnings after market resolution
+      description: >-
+        Builds and submits a Soroban claim transaction for the authenticated user's winning prediction. Idempotent via
+        Idempotency-Key header and internal guard.
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: Claim successful (or previously claimed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '400':
+          description: Market not resolved, prediction not winning, or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Market or prediction not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Soroban transaction submission failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/leaderboard:
     get:
       operationId: getLeaderboard
@@ -2823,7 +3511,9 @@ paths:
       description: >-
         Returns a cursor-paginated list of registered users sorted newest-first (DESC createdAt, DESC id).  Pass the
         opaque `nextCursor` value from one response as the `cursor` query parameter of the next request to advance
-        through pages.  A null `nextCursor` indicates the last page.
+        through pages.  A null `nextCursor` indicates the last page. Supports strong ETag / conditional GET: send the
+        ETag back as If-None-Match on subsequent requests; if the page is unchanged the server responds 304 Not Modified
+        (no body).
       parameters:
         - schema:
             type: string
@@ -2841,9 +3531,25 @@ paths:
           required: false
           name: limit
           in: query
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when the page is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Paginated list of users
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -2860,6 +3566,8 @@ paths:
                 required:
                   - data
                   - nextCursor
+        '304':
+          description: Not Modified — page unchanged since the ETag in If-None-Match.
         '400':
           description: Validation error
           content:
@@ -2872,11 +3580,32 @@ paths:
       tags:
         - Users
       summary: Get the authenticated user’s profile
+      description: >-
+        Returns the authenticated user's profile. Supports strong ETag / conditional GET: send the ETag back as
+        If-None-Match on subsequent requests; if the profile is unchanged the server responds 304 Not Modified (no
+        body).
       security:
         - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when content is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Current user profile
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -2895,6 +3624,8 @@ paths:
                       totals:
                         prediction_count: 2
                         claim_count: 0
+        '304':
+          description: Not Modified — profile unchanged since the ETag in If-None-Match.
         '401':
           description: Unauthorized
           content:
@@ -2913,6 +3644,9 @@ paths:
       tags:
         - Users
       summary: List predictions for a Stellar address
+      description: >-
+        Returns a cursor-paginated list of predictions. Supports strong ETag / conditional GET: send the ETag back as
+        If-None-Match; if the page is unchanged the server responds 304 Not Modified (no body).
       parameters:
         - schema:
             type: string
@@ -2938,9 +3672,25 @@ paths:
           required: false
           name: limit
           in: query
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when the page is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: Paginated predictions
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -2965,6 +3715,8 @@ paths:
                         status: confirmed
                         createdAt: '2026-06-27T12:00:00.000Z'
                     nextCursor: djF8MjR8...
+        '304':
+          description: Not Modified — predictions page unchanged since the ETag in If-None-Match.
         '400':
           description: Invalid address
           content:
@@ -2995,15 +3747,34 @@ paths:
       tags:
         - Users
       summary: Get a user’s public profile
+      description: >-
+        Returns a public user profile. Supports strong ETag / conditional GET: send the ETag back as If-None-Match; if
+        the profile is unchanged the server responds 304 Not Modified (no body).
       parameters:
         - schema:
             type: string
           required: true
           name: stellarAddress
           in: path
+        - schema:
+            type: string
+            description: ETag from a previous 200 response. Triggers 304 when the profile is unchanged.
+          required: false
+          name: If-None-Match
+          in: header
       responses:
         '200':
           description: User profile
+          headers:
+            ETag:
+              description: Strong ETag (SHA-256) of the response body.
+              schema:
+                type: string
+            Cache-Control:
+              description: Always no-cache so clients revalidate before reuse.
+              schema:
+                type: string
+                example: no-cache
           content:
             application/json:
               schema:
@@ -3060,7 +3831,7 @@ paths:
       summary: List the authenticated user’s predictions
       description: >-
         Returns a cursor-paginated list of predictions placed by the caller. Sort order is `createdAt DESC, id DESC`.
-        Pass the returned `nextCursor` as `?cursor=` to fetch the next page. `nextCursor` is `null` when no further
+        Pass the returned `next_cursor` as `?cursor=` to fetch the next page. `next_cursor` is `null` when no further
         pages exist.
       security:
         - bearerAuth: []
@@ -3108,7 +3879,7 @@ paths:
               examples:
                 authenticatedPredictionsPage:
                   value:
-                    data:
+                    items:
                       - id: f47ac10b-58cc-4372-a567-0e02b2c3d479
                         marketId: market_123
                         question: Will Bitcoin hit 100k in 2026?
@@ -3119,7 +3890,7 @@ paths:
                         result: 'yes'
                         createdAt: '2026-05-01T12:00:00.000Z'
                         resolutionTime: '2026-06-01T12:00:00.000Z'
-                    nextCursor: cursor_abc123
+                    next_cursor: cursor_abc123
         '400':
           description: Validation error — invalid query parameters
           content:
@@ -3257,6 +4028,53 @@ paths:
                     error:
                       code: UNAUTHORIZED
                       requestId: req_xyz789
+  /api/admin:
+    get:
+      operationId: listAdminEndpoints
+      tags:
+        - Admin
+      summary: List available admin endpoints
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: false
+          name: cursor
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: false
+          name: limit
+          in: query
+      responses:
+        '200':
+          description: Paginated admin endpoint catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRouteListResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/admin/users/{address}:
     get:
       operationId: getAdminUser
@@ -3495,6 +4313,122 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/audit/user/{addr}:
+    get:
+      operationId: getUserAuditHistory
+      tags:
+        - Audit
+      summary: Per-user audit history
+      description: >
+        Returns paginated audit log entries for the given Stellar wallet
+        address, ordered by `(created_at DESC, id DESC)`.
+
+        Authenticated users may only query their own address. Admins
+        (`role: "admin"`) may query any address.
+
+        Pagination uses the same opaque keyset cursor as the admin audit
+        endpoint — always use the `nextCursor` value from the previous
+        response; never construct a cursor manually.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: addr
+          required: true
+          schema:
+            type: string
+            pattern: '^G[A-Z2-7]{55}$'
+          description: Stellar public key (G + 55 base-32 uppercase characters)
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Opaque pagination cursor from a previous response
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Records per page (1–100, default 20)
+        - in: query
+          name: action
+          required: false
+          schema:
+            type: string
+          description: Filter by exact action string (e.g. "auth.login")
+        - in: query
+          name: startDate
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive lower-bound on createdAt (ISO 8601)
+        - in: query
+          name: endDate
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive upper-bound on createdAt (ISO 8601)
+      responses:
+        '200':
+          description: Paginated audit log for the requested address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAuditPage'
+              examples:
+                singleEntry:
+                  summary: One log entry, no further pages
+                  value:
+                    data:
+                      - id: 11111111-1111-1111-1111-111111111111
+                        action: auth.login
+                        walletAddress: GAHK7EYR7AQ5B56K2RRYUWWC7EJ5CWWWURC2Q4GQRHBDQY7ZLMQVB6TF
+                        ip: 203.0.113.42
+                        correlationId: abc-123
+                        rateLimitContext: null
+                        createdAt: '2026-07-01T12:00:00.000Z'
+                    nextCursor: null
+                emptyPage:
+                  summary: No logs for this address
+                  value:
+                    data: []
+                    nextCursor: null
+        '400':
+          description: Invalid wallet address format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Authenticated user is not authorised to view this address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid query parameters
           content:
             application/json:
               schema:
@@ -4243,3 +5177,113 @@ paths:
                     error:
                       type: already_replayed
                     replayDeliveryId: ffff4444-dddd-4000-8000-000000000005
+  /api/referrals:
+    post:
+      operationId: createReferral
+      tags:
+        - Referrals
+      summary: Create a referral code
+      description: Creates a new referral code for the authenticated user.
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                campaignId:
+                  type: string
+            examples:
+              success:
+                summary: Create referral request
+                value:
+                  campaignId: FWC26
+      responses:
+        '201':
+          description: Referral created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      referralCode:
+                        type: string
+                      message:
+                        type: string
+                    required:
+                      - referralCode
+                      - message
+                required:
+                  - data
+              examples:
+                success:
+                  summary: Referral code created successfully
+                  value:
+                    data:
+                      referralCode: REF-ABC-123
+                      message: Referral created successfully
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+    get:
+      operationId: listReferrals
+      tags:
+        - Referrals
+      summary: List user referrals
+      description: Lists all referrals made by the authenticated user.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of referrals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        referredUser:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                            - pending
+                            - completed
+                        createdAt:
+                          type: string
+                          format: date-time
+                      required:
+                        - id
+                        - referredUser
+                        - status
+                        - createdAt
+                required:
+                  - data
+              examples:
+                success:
+                  summary: Referral list
+                  value:
+                    data:
+                      - id: ref-001
+                        referredUser: GD2...
+                        status: completed
+                        createdAt: '2026-07-28T12:00:00Z'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'

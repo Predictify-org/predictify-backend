@@ -466,6 +466,40 @@ describe("GET /api/reports/scheduled", () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
   });
+
+  it("filters by active=true", async () => {
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockResolvedValueOnce([{count:1}])})} as any);
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockReturnValueOnce({orderBy: jest.fn().mockReturnValueOnce({limit: jest.fn().mockReturnValueOnce({offset: jest.fn().mockResolvedValueOnce([])})})})})} as any);
+    const res = await request(app).get("/api/reports/scheduled").query({active:"true"});
+    expect(res.status).toBe(200);
+  });
+
+  it("filters by active=false", async () => {
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockResolvedValueOnce([{count:1}])})} as any);
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockReturnValueOnce({orderBy: jest.fn().mockReturnValueOnce({limit: jest.fn().mockReturnValueOnce({offset: jest.fn().mockResolvedValueOnce([])})})})})} as any);
+    const res = await request(app).get("/api/reports/scheduled").query({active:"false"});
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 400 when active invalid", async () => {
+    const res = await request(app).get("/api/reports/scheduled").query({active:"invalid"});
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts active=1", async () => {
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockResolvedValueOnce([{count:0}])})} as any);
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockReturnValueOnce({orderBy: jest.fn().mockReturnValueOnce({limit: jest.fn().mockReturnValueOnce({offset: jest.fn().mockResolvedValueOnce([])})})})})} as any);
+    const res = await request(app).get("/api/reports/scheduled").query({active:"1"});
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts active=0", async () => {
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockResolvedValueOnce([{count:0}])})} as any);
+    mockDb.select.mockReturnValueOnce({from: jest.fn().mockReturnValueOnce({where: jest.fn().mockReturnValueOnce({orderBy: jest.fn().mockReturnValueOnce({limit: jest.fn().mockReturnValueOnce({offset: jest.fn().mockResolvedValueOnce([])})})})})} as any);
+    const res = await request(app).get("/api/reports/scheduled").query({active:"0"});
+    expect(res.status).toBe(200);
+  });
+
 });
 
 describe("GET /api/reports/scheduled/:id", () => {

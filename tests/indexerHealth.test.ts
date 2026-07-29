@@ -23,6 +23,7 @@ import express from "express";
 import { createIndexerHealthRouter } from "../src/routes/indexer/health";
 import { indexerService } from "../src/services/indexerService";
 import { errorHandler } from "../src/middleware/errorHandler";
+import { API_SECURITY_HEADERS } from "../src/middleware/securityHeaders";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -349,6 +350,26 @@ describe("GET /api/indexer/health — other behaviours", () => {
     ).get(URL);
 
     expect(res.status).toBe(200);
+  });
+
+  it("sets CSP, X-Content-Type-Options, and Referrer-Policy response headers on /api/indexer responses", async () => {
+    const res = await request(
+      makeApp({
+        probeDatabase: () => Promise.resolve(ALL_OK.database),
+        probeSorobanRpc: () => Promise.resolve(ALL_OK.sorobanRpc),
+      }),
+    ).get(URL);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-security-policy"]).toBe(
+      API_SECURITY_HEADERS["Content-Security-Policy"],
+    );
+    expect(res.headers["x-content-type-options"]).toBe(
+      API_SECURITY_HEADERS["X-Content-Type-Options"],
+    );
+    expect(res.headers["referrer-policy"]).toBe(
+      API_SECURITY_HEADERS["Referrer-Policy"],
+    );
   });
 
   it("echoes x-correlation-id header when provided", async () => {
