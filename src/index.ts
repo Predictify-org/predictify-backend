@@ -9,6 +9,7 @@ import { metricsHistogramMiddleware } from "./middleware/metricsHistogram";
 import { correlationMiddleware } from "./middleware/correlation";
 import { deprecationMiddleware } from "./middleware/deprecation";
 import { fingerprintMiddleware } from "./middleware/fingerprint";
+import { accessLog } from "./middleware/accessLog";
 import { idempotency } from "./middleware/idempotency";
 import { defaultBodySizeLimitMiddleware, webhookBodySizeLimitMiddleware } from "./middleware/bodySize";
 import { healthRouter } from "./routes/health";
@@ -195,6 +196,12 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/users", usersRouter);
   app.use("/api/predictions", predictionsRouter);
   app.use("/api/me/devices", devicesRouter);
+
+  // Structured access logging for /api/admin — captures req-id, latency,
+  // status, response size, and actor for every admin request.
+  // Mounted before the first admin route registration so the finish handler
+  // is set up ahead of actual route handlers.
+  app.use("/api/admin", accessLog);
   app.use("/api/me/devices/:id/revoke", devicesRevokeRouter);
   app.use("/api/me/sessions", sessionsRouter);
   app.use("/api/admin/audit", adminAuditRouter);
@@ -211,7 +218,9 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
   app.use("/api/reports", reportsRouter);
-  app.use("/api/exports/predictions", exportsPredictionsRouter);
+  app.use("/api/fingerprint", fingerprintRouter);
+  app.use("/api/alerts", alertsRouter);
+  app.use("/api/referrals", referralsRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;

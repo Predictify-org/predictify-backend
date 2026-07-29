@@ -288,6 +288,63 @@ You can spin up the entire Predictify stack (API, Indexer, and PostgreSQL) using
 *   **Resilience:** The `depends_on` condition using `service_healthy` or `service_completed_successfully` ensures the database is ready and migrations are applied before application services boot, preventing race conditions.
 *   **Supply-Chain:** The base image is pinned by a specific digest. **Important:** When you run this, verify the digest matches your local build requirements, or update it to the latest `node:20-bookworm-slim` digest if you prefer the absolute latest patch version.
 
+## Structured Access Logging
+
+The API emits structured JSON access logs for several route groups via the `accessLog` middleware (`src/middleware/accessLog.ts`).
+
+### Logged routes
+
+| Route prefix      | Log name                |
+|-------------------|-------------------------|
+| `/api/users`      | `users_access_log`      |
+| `/api/auth`       | `auth_access_log`       |
+| `/api/predictions`| `predictions_access_log`|
+| `/api/markets`    | `markets_access_log`    |
+| `/api/tags`       | `tags_access_log`       |
+| `/api/feature-flags` | `feature_flags_access_log` |
+| `/api/referrals`  | `referrals_access_log`  |
+| `/api/admin`      | `admin_access_log`      |
+
+### Log fields
+
+Every access-log entry contains:
+
+| Field          | Type   | Description |
+|----------------|--------|-------------|
+| `req-id`       | string | Correlation / request ID (same as `correlationId`) |
+| `correlationId`| string | Resolved via `X-Correlation-Id` → `X-Request-Id` → `req.id` → new UUID |
+| `method`       | string | HTTP verb (GET, POST, etc.) |
+| `path`         | string | Request path (no query string) |
+| `statusCode`   | number | Final HTTP response status |
+| `status`       | number | Alias for `statusCode` |
+| `durationMs`   | number | Wall-clock response time in ms |
+| `latency`      | number | Alias for `durationMs` |
+| `ip`           | string | Client IP (X-Forwarded-For or direct) |
+| `size`         | number | Response body size in bytes (`Content-Length` or 0) |
+| `actor`        | string | Authenticated actor ID or `"anonymous"` |
+
+### Actor resolution
+
+- **Admin routes** (`/api/admin/*`): uses `req.adminAddress` (set by `requireAdmin` middleware after JWT verification with `role: "admin"`)
+- **User routes**: uses `req.user.id`
+- **Unauthenticated requests**: logged as `"anonymous"`
+
+### Correlation IDs
+
+The `X-Correlation-Id` response header is echoed back for every logged request. The resolution priority chain is:
+
+1. `X-Correlation-Id` request header (sanitised: alphanumeric + `-_` only, max 128 chars)
+2. `X-Request-Id` request header
+3. `req.id` (set by `pino-http`)
+4. Fresh UUID v4 (guaranteed fallback)
+
+### Security
+
+- Only `req.path` is logged (no query strings or full URLs)
+- `req.headers.authorization` and `req.headers.cookie` are redacted by the logger
+- Actor information is limited to a stable identifier (Stellar address or user ID)
+- Correlation IDs from clients are sanitised to prevent log injection
+
 ## License
 
 MIT
