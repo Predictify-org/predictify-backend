@@ -27,6 +27,7 @@ import { commentsRouter } from "./routes/comments";
 import { usersRouter } from "./routes/users";
 import { predictionsRouter } from "./routes/predictions";
 import { usersHealthRouter } from "./routes/users/health";
+import { exportsPredictionsRouter } from "./routes/exports/predictions";
 import { userPortfolioRouter } from "./routes/users/portfolio";
 import { userStatsRouter } from "./routes/users/stats";
 import { devicesRouter } from "./routes/devices";
@@ -95,7 +96,7 @@ function sanitizeRequestId(raw: string): string | undefined {
 export function createApp(_options: CreateAppOptions = {}): express.Express {
   const app = express();
 
-  const webhookStore: WebhookStore = options.webhooks?.store ?? new DrizzleWebhookStore(db);
+  const webhookStore: WebhookStore = _options.webhooks?.store ?? new DrizzleWebhookStore(db);
   const webhooksRouter = createWebhooksRouter({ store: webhookStore });
 
   app.set("etag", false);
@@ -194,7 +195,6 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/me/devices", devicesRouter);
   app.use("/api/me/devices/:id/revoke", devicesRevokeRouter);
   app.use("/api/me/sessions", sessionsRouter);
-  app.use("/api/webhooks", webhooksRouter);
   app.use("/api/admin/audit", adminAuditRouter);
   app.use("/api/admin/audit", adminAuditExportRouter);
   app.use("/api/audit/counts", auditCountsRouter);
@@ -207,10 +207,7 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
   app.use("/api/reports", reportsRouter);
-  app.use("/api/fingerprint", fingerprintRouter);
-  app.use("/api/alerts", alertsRouter);
-  app.use("/api/referrals", referralsRouter);
-
+  app.use("/api/exports/predictions", exportsPredictionsRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
@@ -249,7 +246,6 @@ if (require.main === module) {
         if (env.ENABLE_DOCS) {
           logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
         }
-        logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
       });
 
       const handleShutdown = async (signal: string) => {
