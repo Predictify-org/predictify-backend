@@ -15,6 +15,7 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth";
 import { createPerUserTokenBucketLimiter } from "../middleware/rateLimit";
 import { scheduledReportsRouter } from "./reports/scheduled";
+import { idempotency } from "../middleware/idempotency";
 
 export interface ReportsRouterOptions {
   rateLimit?: {
@@ -32,6 +33,11 @@ export function createReportsRouter(options: ReportsRouterOptions = {}): Router 
       capacity: options.rateLimit?.capacity ?? 60,
       refillWindowMs: options.rateLimit?.refillWindowMs ?? 60 * 1000,
     }),
+  );
+
+  const mutationMethods = ["POST", "PATCH"];
+  router.use((req, res, next) =>
+    mutationMethods.includes(req.method) ? idempotency(req, res, next) : next()
   );
 
   router.use("/scheduled", scheduledReportsRouter);
