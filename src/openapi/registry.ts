@@ -2598,6 +2598,60 @@ const AdminUserView = z
   })
   .openapi("AdminUserView");
 
+const AdminRouteItem = z
+  .object({
+    id: z.string(),
+    method: z.enum(["DELETE", "GET", "PATCH", "POST"]),
+    path: z.string(),
+    summary: z.string(),
+  })
+  .openapi("AdminRouteItem");
+
+const AdminRouteListResponse = z
+  .object({
+    items: z.array(AdminRouteItem),
+    next_cursor: z.string().nullable(),
+    total: z.number().int(),
+  })
+  .openapi("AdminRouteListResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin",
+  operationId: "listAdminEndpoints",
+  tags: ["Admin"],
+  summary: "List available admin endpoints",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated admin endpoint catalog",
+      content: {
+        "application/json": {
+          schema: AdminRouteListResponse,
+        },
+      },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    422: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/admin/users/{address}",

@@ -17,6 +17,7 @@ import { dependenciesRouter } from "./routes/health/dependencies";
 import { versionRouter } from "./routes/health/version";
 import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
+import { adminRouter } from "./routes/admin";
 import { recommendationsRouter } from "./routes/recommendations";
 import { tagsRouter } from "./routes/tags";
 import { auditRouter } from "./routes/audit";
@@ -188,6 +189,7 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/me/devices", devicesRouter);
   app.use("/api/me/sessions", sessionsRouter);
   app.use("/api/webhooks", webhooksRouter);
+  app.use("/api/admin", adminRouter);
   app.use("/api/admin/audit", adminAuditRouter);
   app.use("/api/admin/audit", adminAuditExportRouter);
   app.use("/api/audit/counts", auditCountsRouter);
