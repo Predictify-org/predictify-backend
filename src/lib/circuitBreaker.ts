@@ -269,4 +269,43 @@ export class CircuitBreaker {
       );
     }
   }
+
+  snapshot(): { state: CircuitBreakerState; failures: number; halfOpenAfterMs: number } {
+    return {
+      state: this.state,
+      failures: this.failureTimes.length,
+      halfOpenAfterMs: this.resetTimeoutMs,
+    };
+  }
+}
+
+// ── Global Registry ─────────────────────────────────────────────────────────
+
+const breakers = new Map<string, CircuitBreaker>();
+
+export function getCircuitBreaker(name: string, opts?: CircuitBreakerOptions): CircuitBreaker {
+  let breaker = breakers.get(name);
+  if (!breaker) {
+    breaker = new CircuitBreaker(name, opts);
+    breakers.set(name, breaker);
+  }
+  return breaker;
+}
+
+export function resetCircuitBreakersForTests(): void {
+  breakers.clear();
+}
+
+export function forceCircuitStateForTests(
+  name: string,
+  state: CircuitBreakerState,
+  opts?: { halfOpenAfterMs?: number }
+): void {
+  const breaker = getCircuitBreaker(name);
+  // @ts-ignore - access private fields for test overrides
+  breaker._state = state;
+  // @ts-ignore
+  breaker.openedAt = state === "OPEN" || state === "HALF_OPEN" ? Date.now() : null;
+  // @ts-ignore
+  if (opts?.halfOpenAfterMs !== undefined) { breaker.resetTimeoutMs = opts.halfOpenAfterMs; }
 }

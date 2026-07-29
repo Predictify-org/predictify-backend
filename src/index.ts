@@ -19,6 +19,7 @@ import { dependenciesRouter } from "./routes/health/dependencies";
 import { versionRouter } from "./routes/health/version";
 import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
+import { adminRouter } from "./routes/admin";
 import { recommendationsRouter } from "./routes/recommendations";
 import { recommendationsHealthRouter } from "./routes/recommendations/health";
 import { tagsRouter } from "./routes/tags";
@@ -53,6 +54,7 @@ import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
 import { auditHealthRouter } from "./routes/audit/health";
+import { userAuditRouter } from "./routes/audit/user";
 import { adminHealthRouter } from "./routes/admin/health";
 import { adminMarketsRouter } from "./routes/admin/markets";
 import { adminSchemaVersionsRouter } from "./routes/admin/schema-versions";
@@ -78,6 +80,7 @@ import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
+import { perUserConcurrency } from "./middleware/perUserConcurrency";
 
 
 const docsEnabled =
@@ -156,8 +159,15 @@ export function createApp(): express.Express {
   app.use("/api/health/ready", createReadyRouter({ db, redis: redisConnection }));
   app.use("/api/health/dependencies", dependenciesRouter);
   app.use("/api/health/version", versionRouter);
+  app.use("/api/health", healthRouter);
   app.use("/api/indexer", indexerHealthRouter);
   app.use("/api/indexer/cursor", indexerCursorRouter);
+
+  // Cap in-flight concurrent requests per user/IP before any API route handler
+  // runs. This prevents a single identity from exhausting the thread / DB-pool
+  // by holding many connections open simultaneously.
+  // Configured via MAX_CONCURRENT_REQUESTS_PER_USER (default: 10).
+  app.use("/api", perUserConcurrency);
 
   const mutationMethods = ["POST", "PATCH"] as const;
   app.use("/api", (req, res, next) =>
@@ -202,6 +212,7 @@ export function createApp(): express.Express {
   app.use("/api/admin/audit", adminAuditExportRouter);
   app.use("/api/audit/health", auditHealthRouter);
   app.use("/api/audit/counts", auditCountsRouter);
+  app.use("/api/audit/user", userAuditRouter);
   app.use("/api/admin/health", adminHealthRouter);
   app.use("/api/admin/users", adminUsersRouter);
   app.use("/api/admin/users", adminNotesRouter);

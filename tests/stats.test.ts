@@ -69,19 +69,19 @@ describe("GET /api/stats – ETag integration", () => {
   // ── 200 happy path ────────────────────────────────────────────────────────
 
   it("200 response includes an ETag header", async () => {
-    const res = await request(app).get("/api/stats");
+    const res = await request(app).get("/api/stats").set("Origin", "http://test");
     expect(res.status).toBe(200);
     expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
   });
 
   it("200 response includes Cache-Control: no-cache", async () => {
-    const res = await request(app).get("/api/stats");
+    const res = await request(app).get("/api/stats").set("Origin", "http://test");
     expect(res.status).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-cache");
   });
 
   it("200 response has the correct data shape", async () => {
-    const res = await request(app).get("/api/stats");
+    const res = await request(app).get("/api/stats").set("Origin", "http://test");
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
       users: 100,
@@ -94,23 +94,23 @@ describe("GET /api/stats – ETag integration", () => {
   // ── Conditional GET: 304 ─────────────────────────────────────────────────
 
   it("returns 304 when If-None-Match matches current ETag", async () => {
-    const first = await request(app).get("/api/stats");
+    const first = await request(app).get("/api/stats").set("Origin", "http://test");
     const etag = first.headers["etag"];
     expect(etag).toBeDefined();
 
     const second = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
   });
 
   it("304 response has no body", async () => {
-    const first = await request(app).get("/api/stats");
+    const first = await request(app).get("/api/stats").set("Origin", "http://test");
     const etag = first.headers["etag"];
 
     const second = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
@@ -119,11 +119,11 @@ describe("GET /api/stats – ETag integration", () => {
   });
 
   it("304 response still includes ETag header", async () => {
-    const first = await request(app).get("/api/stats");
+    const first = await request(app).get("/api/stats").set("Origin", "http://test");
     const etag = first.headers["etag"];
 
     const second = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set("If-None-Match", etag);
 
     expect(second.status).toBe(304);
@@ -131,12 +131,12 @@ describe("GET /api/stats – ETag integration", () => {
   });
 
   it("304 with unquoted (bare hash) If-None-Match", async () => {
-    const first = await request(app).get("/api/stats");
+    const first = await request(app).get("/api/stats").set("Origin", "http://test");
     const quotedEtag = first.headers["etag"];
     const bareHash = quotedEtag.replace(/"/g, "");
 
     const second = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set("If-None-Match", bareHash);
 
     expect(second.status).toBe(304);
@@ -146,7 +146,7 @@ describe("GET /api/stats – ETag integration", () => {
 
   it("returns 200 when If-None-Match is stale", async () => {
     const res = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set(
         "If-None-Match",
         '"000000000000000000000000000000000000000000000000000000000000dead"',
@@ -157,21 +157,21 @@ describe("GET /api/stats – ETag integration", () => {
   });
 
   it("returns 200 when If-None-Match header is absent", async () => {
-    const res = await request(app).get("/api/stats");
+    const res = await request(app).get("/api/stats").set("Origin", "http://test");
     expect(res.status).toBe(200);
   });
 
   // ── ETag correctness ─────────────────────────────────────────────────────
 
   it("ETag is stable across repeated requests for the same data", async () => {
-    const r1 = await request(app).get("/api/stats");
-    const r2 = await request(app).get("/api/stats");
+    const r1 = await request(app).get("/api/stats").set("Origin", "http://test");
+    const r2 = await request(app).get("/api/stats").set("Origin", "http://test");
 
     expect(r1.headers["etag"]).toBe(r2.headers["etag"]);
   });
 
   it("ETag changes when the stats data changes", async () => {
-    const r1 = await request(app).get("/api/stats");
+    const r1 = await request(app).get("/api/stats").set("Origin", "http://test");
     const etag1 = r1.headers["etag"];
 
     // Change the mocked stats
@@ -181,14 +181,14 @@ describe("GET /api/stats – ETag integration", () => {
       predictions: 2000,
     });
 
-    const r2 = await request(app).get("/api/stats");
+    const r2 = await request(app).get("/api/stats").set("Origin", "http://test");
     const etag2 = r2.headers["etag"];
 
     expect(etag1).not.toBe(etag2);
   });
 
   it("sending old ETag after data change returns 200 (not 304)", async () => {
-    const first = await request(app).get("/api/stats");
+    const first = await request(app).get("/api/stats").set("Origin", "http://test");
     const staleEtag = first.headers["etag"];
 
     // Change the mocked stats
@@ -198,7 +198,7 @@ describe("GET /api/stats – ETag integration", () => {
     });
 
     const second = await request(app)
-      .get("/api/stats")
+      .get("/api/stats").set("Origin", "http://test")
       .set("If-None-Match", staleEtag);
 
     expect(second.status).toBe(200);
@@ -210,7 +210,7 @@ describe("GET /api/stats – ETag integration", () => {
   it("returns 500 with error envelope when service throws", async () => {
     mockGetGlobalStats.mockRejectedValue(new Error("DB connection lost"));
 
-    const res = await request(app).get("/api/stats");
+    const res = await request(app).get("/api/stats").set("Origin", "http://test");
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBeDefined();

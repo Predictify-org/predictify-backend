@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAdmin } from "../middleware/requireAdmin";
+import { conditionalGet } from "../middleware/etag";
 import { getAuditLogs } from "../repositories/auditLogRepo";
 import { getRequestId } from "../lib/requestContext";
 import { logger } from "../config/logger";
@@ -85,10 +86,9 @@ rateLimitRouter.get("/", requireAdmin, async (req: Request, res: Response, next:
       "rate_limit_listed",
     );
 
-    return res.json({
-      data: page.data,
-      nextCursor: page.nextCursor,
-    });
+    const responsePayload = { data: page.data, nextCursor: page.nextCursor };
+    if (conditionalGet(responsePayload, req, res)) return;
+    return res.json(responsePayload);
   } catch (err) {
     return next(err);
   }

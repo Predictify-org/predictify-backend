@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { endpointRequestsTotal, endpointRequestDuration } from "../metrics/registry";
+import { sloMonitor } from "../services/sloMonitor";
 
 function sanitizeRoute(route: string): string {
   return route
@@ -24,6 +25,7 @@ export function metricsHistogramMiddleware(req: Request, res: Response, next: Ne
 
     endpointRequestsTotal.inc({ method, route, status });
     endpointRequestDuration.observe({ method, route, status }, durationSec);
+    sloMonitor.record(req, res, durationSec, route);
   });
 
   next();

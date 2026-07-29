@@ -1,6 +1,6 @@
 import { db } from "../db/client";
-import { users, predictions } from "../db/schema";
-import { and, eq, desc, count } from "drizzle-orm";
+import { users, predictions, markets, claims } from "../db/schema";
+import { and, eq, desc, lt, count, or } from "drizzle-orm";
 import { Result, ok, err } from "../errors/RouteError";
 import { encodeCursor, decodeCursor, clampLimit, DEFAULT_PAGE_SIZE } from "../utils/cursor";
 
@@ -161,29 +161,20 @@ export async function getUserPredictions(
 ): Promise<Page<UserPredictionRow>> {
   const { status, limit, cursor } = opts;
 
-  // Base conditions — always scope to this user.
-  const baseConditions = [eq(predictions.userId, userId)];
+  const whereConditions = [eq(predictions.userId, userId)];
 
   if (status) {
     baseConditions.push(eq(predictions.status, status));
   }
 
-  // Decode the opaque cursor.  An invalid or version-mismatched token is
-  // treated as absent so a tampered ?cursor= value never causes a 500.
-  const cursorKey = decodeCursor(cursor);
+  if (cursor) {
+    const [cursorTime, cursorId] = cursor.split("|");
+    const cursorCreatedAt = new Date(cursorTime);
 
-  if (cursorKey) {
-    const cursorTime = new Date(cursorKey.sortValue);
-    // Standard two-column keyset predicate for DESC (createdAt, id) ordering:
-    //   rows where createdAt is strictly earlier, OR same timestamp with a
-    //   lexicographically smaller UUID (which is also numerically earlier).
-    baseConditions.push(
+    whereConditions.push(
       or(
-        lt(predictions.createdAt, cursorTime),
-        and(
-          eq(predictions.createdAt, cursorTime),
-          lt(predictions.id, cursorKey.id),
-        ),
+        lt(predictions.createdAt, cursorCreatedAt),
+        and(eq(predictions.createdAt, cursorCreatedAt), lt(predictions.id, cursorId)),
       )!,
     );
   }

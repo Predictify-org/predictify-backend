@@ -31,10 +31,11 @@ import {
   getCircuitBreaker,
 } from "../src/lib/circuitBreaker";
 import { errorHandler } from "../src/middleware/errorHandler";
-import { signAccessToken } from "../src/services/jwtService";
+import { signAccessToken, verifyAccessToken } from "../src/services/jwtService";
 import { createAuditLog } from "../src/services/auditService";
 
 const mockSignAccessToken = signAccessToken as jest.MockedFunction<typeof signAccessToken>;
+const mockVerifyAccessToken = verifyAccessToken as jest.MockedFunction<typeof verifyAccessToken>;
 const mockCreateAuditLog = createAuditLog as jest.MockedFunction<typeof createAuditLog>;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,11 @@ beforeEach(() => {
   resetCircuitBreakersForTests();
   mockSignAccessToken.mockReturnValue("mocked-token-xyz");
   mockCreateAuditLog.mockResolvedValue("corr-id-123");
+  mockVerifyAccessToken.mockImplementation((token: string) => {
+    const decoded = jwt.decode(token) as any;
+    if (!decoded) throw new Error("invalid token");
+    return decoded;
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -117,6 +123,8 @@ describe("CLOSED state — normal operation", () => {
       expect.objectContaining({
         action: "admin.impersonate",
         walletAddress: ADMIN_ADDRESS,
+        beforeState: null,
+        afterState: { targetAddress: USER_ADDRESS, role: "user" },
       }),
     );
   });

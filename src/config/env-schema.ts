@@ -53,6 +53,9 @@ const baseSchema = z.object({
   // ── Notifications CORS ──────────────────────────────────
   NOTIFICATIONS_CORS_ALLOWED_ORIGINS: z.string().default(""),
 
+  // ── Stats CORS ──────────────────────────────────────────
+  STATS_CORS_ALLOWED_ORIGINS: z.string().default(""),
+
   // ── Geo-blocking ──────────────────────────────────────────
   GEO_BLOCKED_COUNTRIES: z.string().default("").transform((val) =>
     val.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -100,6 +103,11 @@ const baseSchema = z.object({
   SLOW_QUERY_ALERTER_MAX_EXEC_TIME_THRESHOLD_MS: z.coerce.number().int().positive().default(500),
   SLOW_QUERY_ALERTER_LIMIT: z.coerce.number().int().positive().default(10),
   SLOW_QUERY_ALERTER_QUERY_MAX_LENGTH: z.coerce.number().int().positive().default(1000),
+
+  // ── Predictions Confirmer ───────────────────────────────────
+  PREDICTION_CONFIRM_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  PREDICTION_CONFIRM_BATCH_SIZE: z.coerce.number().int().positive().default(1000),
+  PREDICTION_CONFIRM_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
 
   // ── Metrics ───────────────────────────────────────────────
   /** Bearer token required to access /api/metrics. Empty string (default) means no auth. */

@@ -135,34 +135,24 @@ export const usersEndpointDuration = new Histogram({
   registers: [register],
 });
 
-// Generic per-endpoint metrics used by metricsHistogramMiddleware.
 export const endpointRequestsTotal = new Counter({
   name: "endpoint_requests_total",
-  help: "Total number of requests to all instrumented endpoints, segmented by method, route, and status",
+  help: "Total number of requests per endpoint, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
   registers: [register],
 });
 
 export const endpointRequestDuration = new Histogram({
   name: "endpoint_request_duration_seconds",
-  help: "Request duration in seconds for all instrumented endpoints, segmented by method, route, and status",
+  help: "Request duration in seconds per endpoint, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
 
-// Per-endpoint metrics for /api/notifications.
-export const notificationsEndpointRequestsTotal = new Counter({
-  name: "notifications_endpoint_requests_total",
-  help: "Total number of requests to /api/notifications endpoints, segmented by method, route, and status",
-  labelNames: ["method", "route", "status"] as const,
-  registers: [register],
-});
-
-export const notificationsEndpointDuration = new Histogram({
-  name: "notifications_endpoint_duration_seconds",
-  help: "Request duration in seconds for /api/notifications endpoints, segmented by method, route, and status",
-  labelNames: ["method", "route", "status"] as const,
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
+export const sloViolationsTotal = new Counter({
+  name: "slo_violations_total",
+  help: "Total SLO violations, segmented by method, route, and type (latency or error)",
+  labelNames: ["method", "route", "type"] as const,
   registers: [register],
 });

@@ -655,10 +655,31 @@ registry.registerPath({
   path: "/api/markets",
   operationId: "listMarkets",
   tags: ["Markets"],
-  summary: "List all markets",
+  summary: "List all markets with cursor pagination",
+  description:
+    "Returns a cursor-paginated list of markets. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match on subsequent requests; if the page is unchanged " +
+    "the server responds 304 Not Modified (no body).",
+  request: {
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Array of markets",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: z.array(Market) }),
@@ -695,6 +716,13 @@ registry.registerPath({
         },
       },
     },
+    304: {
+      description: "Not Modified — page unchanged since the ETag in If-None-Match.",
+    },
+    400: {
+      description: "Invalid query parameters",
+      content: { "application/json": { schema: ErrorBody } },
+    },
   },
 });
 
@@ -704,6 +732,9 @@ registry.registerPath({
   operationId: "searchMarkets",
   tags: ["Markets"],
   summary: "Full-text search across markets",
+  description:
+    "Full-text search with fuzzy trigram fallback. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if results are unchanged the server responds 304 Not Modified.",
   request: {
     query: z.object({
       q: z.string().min(1),
@@ -711,10 +742,25 @@ registry.registerPath({
       offset: z.coerce.number().int().nonnegative().default(0).optional(),
       page: z.coerce.number().int().positive().optional(),
     }),
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when results are unchanged.",
+      }),
+    }),
   },
   responses: {
     200: {
       description: "Search results",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: MarketSearchResult,
@@ -758,6 +804,9 @@ registry.registerPath({
           },
         },
       },
+    },
+    304: {
+      description: "Not Modified — search results unchanged since the ETag in If-None-Match.",
     },
     400: {
       description: "Missing query parameter",
@@ -822,10 +871,30 @@ registry.registerPath({
   operationId: "getMarketById",
   tags: ["Markets"],
   summary: "Get a market by ID",
-  request: { params: z.object({ id: z.string() }) },
+  description:
+    "Returns a single market by ID. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if unchanged the server responds 304 Not Modified.",
+  request: {
+    params: z.object({ id: z.string() }),
+    headers: z.object({
+      "If-None-Match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the market is unchanged.",
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Market",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: Market }),
@@ -848,6 +917,9 @@ registry.registerPath({
           },
         },
       },
+    },
+    304: {
+      description: "Not Modified — market unchanged since the ETag in If-None-Match.",
     },
     404: {
       description: "Not found",
@@ -2102,9 +2174,8 @@ registry.registerPath({
         .openapi({ description: "Page size (1–100, default 20)." }),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2163,9 +2234,8 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   request: {
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when content is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2243,9 +2313,8 @@ registry.registerPath({
       limit: z.coerce.number().int().min(1).max(100).default(20),
     }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2340,9 +2409,8 @@ registry.registerPath({
   request: {
     params: z.object({ stellarAddress: z.string() }),
     headers: z.object({
-      "if-none-match": z.string().optional().openapi({
+      "If-None-Match": z.string().optional().openapi({
         description: "ETag from a previous 200 response. Triggers 304 when the profile is unchanged.",
-        param: { name: "If-None-Match", in: "header" },
       }),
     }),
   },
@@ -2450,9 +2518,11 @@ const PredictionRow = z
 
 const PredictionsListResponse = z
   .object({
-    data: z.array(PredictionRow),
+    items: z.array(PredictionRow),
     /** Opaque cursor for the next page, or null if this is the last page. */
-    nextCursor: z.string().nullable(),
+    next_cursor: z.string().nullable(),
+    /** Optional total count for clients that need it. */
+    total: z.number().int().nonnegative().optional(),
   })
   .openapi("PredictionsListResponse");
 
@@ -2477,8 +2547,8 @@ registry.registerPath({
   description:
     "Returns a cursor-paginated list of predictions placed by the caller. " +
     "Sort order is `createdAt DESC, id DESC`. " +
-    "Pass the returned `nextCursor` as `?cursor=` to fetch the next page. " +
-    "`nextCursor` is `null` when no further pages exist.",
+    "Pass the returned `next_cursor` as `?cursor=` to fetch the next page. " +
+    "`next_cursor` is `null` when no further pages exist.",
   security: [{ bearerAuth: [] }],
   request: {
     query: z.object({
@@ -2488,7 +2558,7 @@ registry.registerPath({
       status: PredictionStatus.optional(),
       /** Filter by chosen outcome value (e.g. "yes" / "no"). */
       outcome: z.string().min(1).max(64).optional(),
-      /** Opaque cursor from the previous page\u2019s `nextCursor`. */
+      /** Opaque cursor from the previous page’s `next_cursor`. */
       cursor: z.string().optional(),
       /** Page size — default 20, max 100. */
       limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
@@ -2503,7 +2573,7 @@ registry.registerPath({
           examples: {
             authenticatedPredictionsPage: {
               value: {
-                data: [
+                items: [
                   {
                     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                     marketId: "market_123",
@@ -2517,7 +2587,7 @@ registry.registerPath({
                     resolutionTime: "2026-06-01T12:00:00.000Z",
                   },
                 ],
-                nextCursor: "cursor_abc123",
+                next_cursor: "cursor_abc123",
               },
             },
           },
@@ -2740,6 +2810,60 @@ const AdminUserView = z
     }),
   })
   .openapi("AdminUserView");
+
+const AdminRouteItem = z
+  .object({
+    id: z.string(),
+    method: z.enum(["DELETE", "GET", "PATCH", "POST"]),
+    path: z.string(),
+    summary: z.string(),
+  })
+  .openapi("AdminRouteItem");
+
+const AdminRouteListResponse = z
+  .object({
+    items: z.array(AdminRouteItem),
+    next_cursor: z.string().nullable(),
+    total: z.number().int(),
+  })
+  .openapi("AdminRouteListResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin",
+  operationId: "listAdminEndpoints",
+  tags: ["Admin"],
+  summary: "List available admin endpoints",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated admin endpoint catalog",
+      content: {
+        "application/json": {
+          schema: AdminRouteListResponse,
+        },
+      },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    422: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
 
 registry.registerPath({
   method: "get",

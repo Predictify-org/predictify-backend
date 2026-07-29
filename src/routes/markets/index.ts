@@ -25,6 +25,7 @@ import { predictionCountRouter } from "./prediction-count";
 import { watchersRouter } from "./watchers";
 import { marketAuditRouter } from "../marketAudit";
 import { disputesRouter } from "../disputes";
+import { predictionsRouter } from "../predictions";
 import { requestTimeout } from "../../middleware/timeout";
 import {
   listMarketsQuerySchema,
@@ -53,6 +54,7 @@ marketsRouter.use("/:id/prediction-count", predictionCountRouter);
 marketsRouter.use("/:id/watchers", watchersRouter);
 marketsRouter.use("/:id/audit", marketAuditRouter);
 marketsRouter.use("/:id/disputes", disputesRouter);
+marketsRouter.use("/", predictionsRouter);
 
 marketsRouter.get("/search", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
@@ -79,7 +81,7 @@ marketsRouter.get("/search", async (req, res, next) => {
 
     const result = await searchMarkets({ query: q, limit, offset });
 
-    return res.status(200).json({
+    const payload = {
       data: result.data,
       total: result.total,
       limit,
@@ -100,7 +102,13 @@ marketsRouter.get("/search", async (req, res, next) => {
         total: result.total,
         fallback: result.fallback,
       },
-    });
+    };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
+    return res.status(200).json(payload);
   } catch (err) {
     logger.error({ reqId, correlationId: reqId, err }, "markets_search_failed");
     return next(err);
@@ -154,7 +162,13 @@ marketsRouter.get("/featured", async (req, res, next) => {
 
     const { limit } = parsed.data;
     const data = await listFeaturedMarkets(limit);
-    return res.json({ data });
+    const payload = { data };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
+    return res.json(payload);
   } catch (e) {
     logger.error({ reqId, correlationId: reqId, err: e }, "markets_featured_failed");
     return next(e);
@@ -171,11 +185,17 @@ marketsRouter.get("/upcoming", async (req, res, next) => {
 
     const { limit } = parsed.data;
     const data = await listUpcomingMarkets({ limit });
+    const payload = { data };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
     logger.info(
       { reqId, correlationId: reqId, count: data.length },
       "markets_upcoming_listed",
     );
-    return res.json({ data });
+    return res.json(payload);
   } catch (err) {
     logger.error(
       { reqId, correlationId: reqId, err },

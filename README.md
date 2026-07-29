@@ -105,6 +105,50 @@ Behavior:
 - Webhook routes may opt into a larger limit of `1mb`.
 - Requests exceeding the configured limit return HTTP `413` with the standard error envelope, including correlation and request IDs.
 
+## Per-user concurrency limit
+
+All `/api` routes are protected by a per-user in-flight request cap provided by `src/middleware/perUserConcurrency.ts`.
+
+**What it limits:** the number of *concurrent* (simultaneously in-flight) requests from a single identity — not throughput over a time window.  This prevents a single misbehaving client from holding many long-lived connections open and exhausting the server's thread pool or database connection pool.
+
+**Identity resolution:**
+1. `req.user.id` — set by `requireAuth` / `optionalAuth`
+2. `req.user.stellarAddress` — fallback from the same middlewares
+3. First hop of `X-Forwarded-For` / `req.socket.remoteAddress` — anonymous callers
+
+**When the limit is exceeded:**
+
+```
+HTTP 429 Too Many Requests
+Retry-After: 1
+```
+
+```json
+{
+  "error": {
+    "code": "concurrency_limit_exceeded",
+    "message": "Too many concurrent requests",
+    "retryAfter": 1
+  }
+}
+```
+
+**Configuration** (`MAX_CONCURRENT_REQUESTS_PER_USER`, default `10`):
+
+```bash
+# .env
+MAX_CONCURRENT_REQUESTS_PER_USER=10
+```
+
+**Advanced use** — create a custom instance with a different limit for a specific route group:
+
+```ts
+import { createPerUserConcurrencyMiddleware } from "./middleware/perUserConcurrency";
+router.use(createPerUserConcurrencyMiddleware({ limit: 3 }));
+```
+
+> **Multi-process note:** The counter is in-process only.  In a clustered deployment each process enforces the limit independently, so the effective cap across N processes is `N × MAX_CONCURRENT_REQUESTS_PER_USER`.  For single-process deployments (the standard Docker Compose setup) the limit is exact.
+
 ## Indexer gap scan
 
 The gap-scan worker detects missing ledger ranges in `indexer_events` between the durable cursor and chain tip, emits `indexer_gap_detected_total{from,to}`, and self-heals via `backfillRange`:

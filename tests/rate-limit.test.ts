@@ -313,3 +313,322 @@ describe("rate_limit_request_duration_seconds histogram", () => {
     );
   });
 });
+
+describe("GET /api/rate-limit – ETag caching", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("200 response includes an ETag header", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [
+        {
+          id: "etag-test-1",
+          action: "rate_limit.blocked",
+          walletAddress: null,
+          ip: "10.0.0.1",
+          correlationId: "etag-test",
+          rateLimitContext: null,
+          createdAt: new Date("2026-07-28T12:00:00Z"),
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const res = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+  });
+
+  it("200 response includes Cache-Control: no-cache", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [],
+      nextCursor: null,
+    });
+
+    const res = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches current ETag", async () => {
+    const mockData = [
+      {
+        id: "etag-304-1",
+        action: "rate_limit.blocked",
+        walletAddress: null,
+        ip: "10.0.0.1",
+        correlationId: "etag-304",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    mockGetAuditLogs.mockResolvedValue({
+      data: mockData,
+      nextCursor: null,
+    });
+
+    const first = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    const etag = first.headers["etag"];
+    expect(etag).toBeDefined();
+
+    const second = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("304 response has no body", async () => {
+    const mockData = [
+      {
+        id: "etag-nobody-1",
+        action: "rate_limit.blocked",
+        walletAddress: null,
+        ip: "10.0.0.1",
+        correlationId: "etag-nobody",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    mockGetAuditLogs.mockResolvedValue({
+      data: mockData,
+      nextCursor: null,
+    });
+
+    const first = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    const etag = first.headers["etag"];
+
+    const second = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+    expect(second.text).toBeFalsy();
+  });
+
+  it("304 response still includes ETag header", async () => {
+    const mockData = [
+      {
+        id: "etag-header-1",
+        action: "rate_limit.blocked",
+        walletAddress: null,
+        ip: "10.0.0.1",
+        correlationId: "etag-header",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    mockGetAuditLogs.mockResolvedValue({
+      data: mockData,
+      nextCursor: null,
+    });
+
+    const first = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    const etag = first.headers["etag"];
+
+    const second = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+    expect(second.headers["etag"]).toBe(etag);
+  });
+
+  it("returns 200 when If-None-Match is stale (wrong hash)", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [
+        {
+          id: "stale-1",
+          action: "rate_limit.blocked",
+          walletAddress: null,
+          ip: "10.0.0.1",
+          correlationId: "stale-test",
+          rateLimitContext: null,
+          createdAt: new Date("2026-07-28T12:00:00Z"),
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const res = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeDefined();
+  });
+
+  it("returns 200 when If-None-Match header is absent", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [],
+      nextCursor: null,
+    });
+
+    const res = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("ETag is stable across repeated requests for the same data", async () => {
+    const mockData = [
+      {
+        id: "stable-1",
+        action: "rate_limit.blocked",
+        walletAddress: null,
+        ip: "10.0.0.1",
+        correlationId: "stable-test",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    mockGetAuditLogs.mockResolvedValue({
+      data: mockData,
+      nextCursor: null,
+    });
+
+    const r1 = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    const r2 = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    expect(r1.headers["etag"]).toBe(r2.headers["etag"]);
+  });
+
+  it("ETag changes when the data payload differs", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [
+        {
+          id: "v1",
+          action: "rate_limit.blocked",
+          walletAddress: null,
+          ip: "10.0.0.1",
+          correlationId: "v1",
+          rateLimitContext: null,
+          createdAt: new Date("2026-07-28T12:00:00Z"),
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const r1 = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: [
+        {
+          id: "v2",
+          action: "rate_limit.blocked",
+          walletAddress: null,
+          ip: "10.0.0.2",
+          correlationId: "v2",
+          rateLimitContext: null,
+          createdAt: new Date("2026-07-28T13:00:00Z"),
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const r2 = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    expect(r1.headers["etag"]).not.toBe(r2.headers["etag"]);
+  });
+
+  it("sends 304 only for the specific resource version", async () => {
+    const mockDataV1 = [
+      {
+        id: "ver-1",
+        action: "rate_limit.blocked",
+        walletAddress: null,
+        ip: "10.0.0.1",
+        correlationId: "ver-test",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    const mockDataV2 = [
+      {
+        id: "ver-1",
+        action: "rate_limit.blocked",
+        walletAddress: "GAHK7EYR7AQ5B56K2RRYUWWC7EJ5CWWWURC2Q4GQRHBDQY7ZLMQVB6TF",
+        ip: "10.0.0.1",
+        correlationId: "ver-test",
+        rateLimitContext: null,
+        createdAt: new Date("2026-07-28T12:00:00Z"),
+      },
+    ];
+
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: mockDataV1,
+      nextCursor: null,
+    });
+
+    const first = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token");
+
+    const staleEtag = first.headers["etag"];
+
+    mockGetAuditLogs.mockResolvedValueOnce({
+      data: mockDataV2,
+      nextCursor: null,
+    });
+
+    const second = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .set("If-None-Match", staleEtag);
+
+    expect(second.status).toBe(200);
+    expect(second.body.data).toHaveLength(1);
+  });
+
+  it("400 validation error does not set strong ETag or Cache-Control headers", async () => {
+    const res = await request(app)
+      .get("/api/rate-limit")
+      .set("Authorization", "Bearer valid-admin-token")
+      .query({ limit: "not-a-number" });
+
+    expect(res.status).toBe(400);
+    // Express sets a weak ETag automatically; our middleware sets a strong
+    // SHA-256 ETag only on 200 responses. Verify it is NOT a strong ETag.
+    const etag = res.headers["etag"];
+    if (etag) {
+      expect(etag).not.toMatch(/^"[0-9a-f]{64}"$/);
+    }
+    // Our middleware sets Cache-Control only on handled payloads.
+    expect(res.headers["cache-control"]).toBeUndefined();
+  });
+});

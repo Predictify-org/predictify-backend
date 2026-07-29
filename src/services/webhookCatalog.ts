@@ -114,6 +114,35 @@ export const DisputeOpenedPayloadSchema = WebhookEnvelopeSchema.extend({
 export type DisputeOpenedPayload = z.infer<typeof DisputeOpenedPayloadSchema>;
 
 // ---------------------------------------------------------------------------
+// prediction.confirmed
+// ---------------------------------------------------------------------------
+
+/**
+ * Emitted when the predictionsConfirmer worker detects a matching indexer
+ * event for a pending prediction and transitions it to confirmed.
+ *
+ * The dispatcher fans this event out to every subscription which subscribes to
+ * "prediction.confirmed" or "*".
+ */
+export const PredictionConfirmedPayloadSchema = WebhookEnvelopeSchema.extend({
+  event: z.literal("prediction.confirmed"),
+  /** UUID of the confirmed prediction. */
+  predictionId: z.string().uuid(),
+  /** Primary key of the market the prediction belongs to. */
+  marketId: z.string(),
+  /** UUID of the user who made the prediction. */
+  userId: z.string().uuid(),
+  /** The outcome the user predicted (e.g. "yes" or "no"). */
+  outcome: z.string(),
+  /** The amount staked on the prediction (string to preserve precision). */
+  amount: z.string(),
+  /** On-chain transaction hash of the bet_placed event. */
+  txHash: z.string(),
+});
+
+export type PredictionConfirmedPayload = z.infer<typeof PredictionConfirmedPayloadSchema>;
+
+// ---------------------------------------------------------------------------
 // Catalog registry
 // ---------------------------------------------------------------------------
 
@@ -130,6 +159,7 @@ export type DisputeOpenedPayload = z.infer<typeof DisputeOpenedPayloadSchema>;
 export const WEBHOOK_EVENT_SCHEMAS = {
   "market.resolved": MarketResolvedPayloadSchema,
   "dispute.opened": DisputeOpenedPayloadSchema,
+  "prediction.confirmed": PredictionConfirmedPayloadSchema,
 } as const;
 
 /** All registered event-type strings, derived from the catalog at compile time. */
@@ -141,7 +171,8 @@ export type WebhookEventType = keyof typeof WEBHOOK_EVENT_SCHEMAS;
 /** Union of every concrete payload type. */
 export type WebhookPayload =
   | MarketResolvedPayload
-  | DisputeOpenedPayload;
+  | DisputeOpenedPayload
+  | PredictionConfirmedPayload;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
