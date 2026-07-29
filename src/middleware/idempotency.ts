@@ -159,6 +159,8 @@ export async function idempotency(
   const originalJson = res.json.bind(res);
   const originalSend = res.send.bind(res);
 
+  let persisted = false;
+
   function saveIdempotency(bodyToSave: unknown) {
     if (persisted) return;
     persisted = true;
@@ -169,7 +171,7 @@ export async function idempotency(
         const v = res.getHeader(h);
         if (v !== undefined) headers[h] = String(v);
       }
-      const expiresAt = new Date(Date.now() + TTL_MS);
+      const expiresAt = new Date(Date.now() + IDEMPOTENCY_TTL_MS);
       const valBody = typeof bodyToSave === "string" ? { content: bodyToSave } : bodyToSave;
       db.insert(idempotencyRecords)
         .values({
@@ -180,35 +182,12 @@ export async function idempotency(
           responseHeaders: headers,
           expiresAt,
         })
-        .catch((err) => logger.error({ err, key, correlationId }, "idempotency_persist_failed"));
+        .catch((err) => logger.error({ err, key, correlationId: reqId }, "idempotency_persist_failed"));
     }
   }
 
   res.json = function (responseBody: unknown) {
-    const status = res.statusCode;
-    const headers: Record<string, string> = {};
-    for (const h of REPLAY_HEADERS) {
-      const v = res.getHeader(h);
-      if (v) headers[h] = String(v);
-    }
-
-    // Only cache successful mutations; client / server errors are not stored.
-    if (status >= 200 && status < 300) {
-      const expiresAt = new Date(Date.now() + IDEMPOTENCY_TTL_MS);
-      db.insert(idempotencyRecords)
-        .values({
-          key,
-          fingerprint,
-          responseStatus: status,
-          responseBody,
-          responseHeaders: headers,
-          expiresAt,
-        })
-        .catch((err) =>
-          logger.error({ err, reqId, key }, "idempotency_persist_failed"),
-        );
-    }
-
+    saveIdempotency(responseBody);
     return originalJson(responseBody);
   };
 
