@@ -126,3 +126,25 @@ export const usersEndpointDuration = new Histogram({
   buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
+
+export const endpointRequestsTotal = new Counter({
+  name: "endpoint_requests_total",
+  help: "Total number of requests per endpoint, segmented by method, route, and status",
+  labelNames: ["method", "route", "status"] as const,
+  registers: [register],
+});
+
+export const endpointRequestDuration = new Histogram({
+  name: "endpoint_request_duration_seconds",
+  help: "Request duration in seconds per endpoint, segmented by method, route, and status",
+  labelNames: ["method", "route", "status"] as const,
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+
+export const sloViolationsTotal = new Counter({
+  name: "slo_violations_total",
+  help: "Total SLO violations, segmented by method, route, and type (latency or error)",
+  labelNames: ["method", "route", "type"] as const,
+  registers: [register],
+});
