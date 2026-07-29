@@ -149,8 +149,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GUSERONE")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0]).toMatchObject({
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0]).toMatchObject({
         id: predictionId,
         marketId: "market-1",
         question: "Will it rain?",
@@ -158,7 +158,8 @@ describe("GET /api/predictions integration", () => {
         amount: "25",
         status: "confirmed",
       });
-      expect(res.body.nextCursor).toBeNull();
+      expect(res.body.next_cursor).toBeNull();
+      expect(res.body.total).toBeUndefined();
     });
 
     it("only returns predictions scoped to the authenticated user (never another user's)", async () => {
@@ -178,8 +179,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GUSERA")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0].outcome).toBe("yes");
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0].outcome).toBe("yes");
     });
 
     it("returns an empty page (not an error) for a user with no predictions", async () => {
@@ -190,7 +191,7 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GLONELYUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ data: [], nextCursor: null });
+      expect(res.body).toEqual({ items: [], next_cursor: null });
     });
   });
 
@@ -222,8 +223,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GFILTERUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0].marketId).toBe("market-b");
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0].marketId).toBe("market-b");
     });
 
     it("filters by status", async () => {
@@ -232,8 +233,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GFILTERUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0].status).toBe("won");
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0].status).toBe("won");
     });
 
     it("filters by outcome", async () => {
@@ -242,8 +243,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GFILTERUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(2);
-      res.body.data.forEach((p: { outcome: string }) => expect(p.outcome).toBe("yes"));
+      expect(res.body.items).toHaveLength(2);
+      res.body.items.forEach((p: { outcome: string }) => expect(p.outcome).toBe("yes"));
     });
 
     it("combines multiple filters", async () => {
@@ -252,8 +253,8 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GFILTERUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0]).toMatchObject({ marketId: "market-a", outcome: "yes" });
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0]).toMatchObject({ marketId: "market-a", outcome: "yes" });
     });
   });
 
@@ -292,18 +293,18 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GPAGEUSER")}`);
 
       expect(page1.status).toBe(200);
-      expect(page1.body.data).toHaveLength(2);
+      expect(page1.body.items).toHaveLength(2);
       // Most-recent-first: the 2026-07-03 row (id `third`) should be first.
-      expect(page1.body.data[0].id).toBe(third);
-      expect(page1.body.nextCursor).toEqual(expect.any(String));
+      expect(page1.body.items[0].id).toBe(third);
+      expect(page1.body.next_cursor).toEqual(expect.any(String));
 
       const page2 = await request(createPredictionsApp())
-        .get(`/api/predictions?limit=2&cursor=${encodeURIComponent(page1.body.nextCursor)}`)
+        .get(`/api/predictions?limit=2&cursor=${encodeURIComponent(page1.body.next_cursor)}`)
         .set("Authorization", `Bearer ${tokenFor("GPAGEUSER")}`);
 
       expect(page2.status).toBe(200);
-      expect(page2.body.data).toHaveLength(1);
-      expect(page2.body.nextCursor).toBeNull();
+      expect(page2.body.items).toHaveLength(1);
+      expect(page2.body.next_cursor).toBeNull();
     });
 
     it("silently restarts from page 1 for a garbage cursor instead of erroring", async () => {
@@ -321,7 +322,7 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GBADCURSORUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
+      expect(res.body.items).toHaveLength(1);
     });
   });
 
@@ -409,7 +410,7 @@ describe("GET /api/predictions integration", () => {
         .set("Authorization", `Bearer ${tokenFor("GDEFAULTLIMITUSER")}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
+      expect(res.body.items).toHaveLength(1);
     });
   });
 });

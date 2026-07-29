@@ -6,32 +6,28 @@
  * global idempotency middleware applied in `src/index.ts`.
  */
 
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth";
 import { claimWinnings, ClaimError } from "../services/claimService";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
-import { Router, Request, Response, NextFunction } from "express";
-import { requireAuth } from "../middleware/requireAuth";
 import { createPerUserRateLimiter } from "../middleware/rateLimit";
 import { getPredictionExplanation } from "../services/predictionExplainService";
 import cancelRouter from "./predictions/cancel";
 import { createShareRouter } from "./predictions/share";
 import { predictionsHealthRouter } from "./predictions/health";
 import { listPredictions } from "../repositories/predictionRepo";
-import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
 import { clampLimit } from "../utils/cursor";
 import {
   predictionsListTotal,
   predictionExplainTotal,
   predictionsRequestDuration,
 } from "../metrics/registry";
-import { clampLimit } from "../utils/cursor";
 import type { AuthenticatedRequest } from "../middleware/auth";
 import { listPredictionsQuerySchema } from "../validators/predictions";
 import { requestTimeout } from "../middleware/timeout";
+import { conditionalGet } from "../middleware/etag";
 
 export const predictionsRouter = Router();
 
@@ -154,15 +150,15 @@ predictionsRouter.post("/claim", async (req, res, next) => {
  *   - marketId (optional) — filter to a single market
  *   - status   (optional) — one of: pending, confirmed, won, lost, claimed
  *   - outcome  (optional) — e.g. "yes" / "no"
- *   - cursor   (optional) — opaque token from the previous page's `nextCursor`
+ *   - cursor   (optional) — opaque token from the previous page's `next_cursor`
  *   - limit    (optional, default 20, max 100) — page size
  *
  * Response:
- *   200 { data: PredictionRow[], nextCursor: string | null }
+ *   200 { items: PredictionRow[], next_cursor: string | null, total?: number }
  *
  * Pagination:
- *   `nextCursor` is null on the last page.  Pass it verbatim as `?cursor=` to
- *   fetch the next page.  Cursors are versioned; a stale or tampered cursor
+ *   `next_cursor` is null on the last page. Pass it verbatim as `?cursor=` to
+ *   fetch the next page. Cursors are versioned; a stale or tampered cursor
  *   safely restarts from page 1 rather than returning a wrong offset.
  *
  * Errors:
@@ -221,7 +217,7 @@ predictionsRouter.get(
         cursor,
       });
 
-      const payload = { data: page.data, nextCursor: page.nextCursor };
+      const payload = { items: page.data, next_cursor: page.nextCursor };
       if (conditionalGet(payload, req, res)) return;
 
       logger.info(
@@ -240,7 +236,7 @@ predictionsRouter.get(
         (Date.now() - startMs) / 1000,
       );
 
-      res.json({ data: page.data, nextCursor: page.nextCursor });
+      res.json({ items: page.data, next_cursor: page.nextCursor });
     } catch (err) {
       predictionsListTotal.inc({ outcome: "error" });
       predictionsRequestDuration.observe(

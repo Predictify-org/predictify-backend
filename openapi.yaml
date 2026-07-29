@@ -789,16 +789,19 @@ components:
     PredictionsListResponse:
       type: object
       properties:
-        data:
+        items:
           type: array
           items:
             $ref: '#/components/schemas/PredictionRow'
-        nextCursor:
+        next_cursor:
           type: string
           nullable: true
+        total:
+          type: integer
+          minimum: 0
       required:
-        - data
-        - nextCursor
+        - items
+        - next_cursor
     FollowResult:
       type: object
       properties:
@@ -3245,7 +3248,7 @@ paths:
       summary: List the authenticated user’s predictions
       description: >-
         Returns a cursor-paginated list of predictions placed by the caller. Sort order is `createdAt DESC, id DESC`.
-        Pass the returned `nextCursor` as `?cursor=` to fetch the next page. `nextCursor` is `null` when no further
+        Pass the returned `next_cursor` as `?cursor=` to fetch the next page. `next_cursor` is `null` when no further
         pages exist.
       security:
         - bearerAuth: []
@@ -3293,7 +3296,7 @@ paths:
               examples:
                 authenticatedPredictionsPage:
                   value:
-                    data:
+                    items:
                       - id: f47ac10b-58cc-4372-a567-0e02b2c3d479
                         marketId: market_123
                         question: Will Bitcoin hit 100k in 2026?
@@ -3304,7 +3307,7 @@ paths:
                         result: 'yes'
                         createdAt: '2026-05-01T12:00:00.000Z'
                         resolutionTime: '2026-06-01T12:00:00.000Z'
-                    nextCursor: cursor_abc123
+                    next_cursor: cursor_abc123
         '400':
           description: Validation error — invalid query parameters
           content:
