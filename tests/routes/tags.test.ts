@@ -5,6 +5,14 @@ import { closeAuthPool } from "../../src/middleware/requireAuth";
 import { getMarketTags } from "../../src/repositories/marketRepository";
 import { errorHandler } from "../../src/middleware/errorHandler";
 
+jest.mock("../../src/middleware/timeout", () => {
+  const actual = jest.requireActual("../../src/middleware/timeout");
+  return {
+    ...actual,
+    requestTimeout: actual.requestTimeout,
+  };
+});
+
 jest.mock("../../src/repositories/marketRepository");
 describe("Tags API", () => {
   let app: any;
@@ -18,6 +26,7 @@ describe("Tags API", () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    jest.useRealTimers();
     (getMarketTags as jest.Mock).mockResolvedValue([
       { tag: "stellar", count: 10 },
       { tag: "wave", count: 5 },
@@ -69,5 +78,46 @@ describe("Tags API", () => {
     expect(res.headers["x-correlation-id"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
+  });
+
+  it("should return 504 when tag lookup exceeds the timeout", async () => {
+    jest.useFakeTimers();
+    (getMarketTags as jest.Mock).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([{ tag: "slow", count: 1 }]), 6000)),
+    );
+
+    const responsePromise = request(app).get("/api/tags");
+    await jest.advanceTimersByTimeAsync(5000);
+    const res = await responsePromise;
+
+    expect(res.status).toBe(504);
+    expect(res.body.error).toMatchObject({
+      code: "gateway_timeout",
+      message: "Tags request timed out",
+      requestId: expect.any(String),
+    });
+  });
+
+  it("should abandon the handler result after timeout instead of sending a second response", async () => {
+    jest.useFakeTimers();
+
+    let resolveTags: ((value: Array<{ tag: string; count: number }>) => void) | undefined;
+    (getMarketTags as jest.Mock).mockImplementation(
+      () => new Promise((resolve) => {
+        resolveTags = resolve;
+      }),
+    );
+
+    const responsePromise = request(app).get("/api/tags");
+    await jest.advanceTimersByTimeAsync(5000);
+    const res = await responsePromise;
+
+    expect(res.status).toBe(504);
+
+    resolveTags?.([{ tag: "late", count: 1 }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getMarketTags).toHaveBeenCalledTimes(1);
   });
 });
