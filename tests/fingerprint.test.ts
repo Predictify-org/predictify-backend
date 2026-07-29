@@ -430,6 +430,25 @@ describe("GET /api/fingerprint", () => {
     ]);
     expect(r1.body.fingerprint).toBe(r2.body.fingerprint);
   });
+
+  it("enforces per-user token-bucket rate limit with 429 and Retry-After", async () => {
+    const app = createApp();
+    const limit = 60; // default FINGERPRINT_RATE_LIMIT_CAPACITY
+    const isolatedIp = "9.9.9.9";
+
+    // Exhaust the rate limit for this IP
+    for (let i = 0; i < limit; i++) {
+      await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    }
+
+    // The 61st request should be blocked
+    const res = await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBeDefined();
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("rate_limit_exceeded");
+  });
 });
 
 // ── 35: fingerprintMiddleware error handling ────────────────────────────

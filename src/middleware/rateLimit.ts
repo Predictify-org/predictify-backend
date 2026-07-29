@@ -31,6 +31,7 @@ import {
   type RateLimitContext,
 } from "../services/auditService";
 import { env } from "../config/env";
+import { logger } from "../config/logger";
 
 declare global {
   namespace Express {
@@ -375,5 +376,14 @@ export function createUserRateLimiter(options: Partial<Options> = {}): RateLimit
 export const webhooksRateLimiter = createPerUserTokenBucketLimiter({
   capacity: env.WEBHOOKS_RATE_LIMIT_MAX,
   refillWindowMs: env.WEBHOOKS_RATE_LIMIT_WINDOW_MS,
+  keyGenerator: getUserRateKey,
+});
+
+/**
+ * Pre-configured per-user rate limiter for `/api/fingerprint` route.
+ */
+export const fingerprintRateLimiter = createPerUserTokenBucketLimiter({
+  capacity: env.FINGERPRINT_RATE_LIMIT_CAPACITY,
+  refillWindowMs: env.FINGERPRINT_RATE_LIMIT_WINDOW_MS,
   keyGenerator: getUserRateKey,
 });

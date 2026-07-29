@@ -10,6 +10,7 @@ import { backupVerificationWorker } from "./workers/backupVerificationWorker";
 import { reconciliationWorker } from "./workers/reconciliationWorker";
 import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
 import { drainSearchRequests } from "./routes/search";
+import { drainExportsRequests } from "./routes/exports";
 
 const app = createApp();
 let webhookWorker: WebhookWorker | null = null;
@@ -41,6 +42,8 @@ connectWithRetry()
 
       // Ensure in-flight /api/search requests finish
       await drainSearchRequests(4000);
+      // Ensure in-flight /api/exports requests finish
+      await drainExportsRequests(4000);
 
       stopScheduler();
       await closeDb();

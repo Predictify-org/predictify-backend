@@ -11,6 +11,16 @@ export const registry = new OpenAPIRegistry();
 
 // ── Reusable component schemas ───────────────────────────────────────────────
 
+/**
+ * Shared header schema for endpoints that accept an Idempotency-Key.
+ * Detects duplicate submissions so the client can safely retry on network errors.
+ */
+const IdempotencyKeyHeader = z.object({
+  "Idempotency-Key": z.string().min(1).max(255).openapi({
+    description: "Unique idempotency key for safe retries. See RFC 7231 §6.3.2.",
+  }),
+});
+
 export const ErrorBody = registry.register(
   "ErrorBody",
   z
@@ -281,6 +291,7 @@ registry.registerPath({
     200: {
       description: "Tokens issued",
       content: {
+        "application/json": {
           schema: TokenPair,
           examples: {
             tokensIssued: {
@@ -1006,13 +1017,21 @@ const MarketComment = z
 registry.registerPath({
   method: "get",
   path: "/api/markets/{id}/comments",
-  tags: ["Markets"],
+  tags: ["Markets", "Comments"],
   summary: "List comments for a market with cursor pagination",
+  description:
+    "Returns a cursor-paginated list of comments for the given market. The resolved `X-Correlation-Id` is echoed back in the response header.",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({
       limit: z.coerce.number().int().positive().optional().default(20),
       cursor: z.string().optional(),
+    }),
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is generated when absent.",
+      }),
     }),
   },
   responses: {
@@ -1026,6 +1045,130 @@ registry.registerPath({
           }),
         },
       },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+  },
+});
+
+// ── /api/comments (root) ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/comments",
+  tags: ["Comments"],
+  summary: "List comments (root endpoint)",
+  description:
+    "Returns a paginated list of comments. The resolved `X-Correlation-Id` is echoed back in the response header.",
+  request: {
+    query: z.object({
+      limit: z.coerce.number().int().positive().max(100).optional(),
+      cursor: z.string().optional(),
+    }),
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID. Alphanumeric, hyphens, and underscores only (max 128 chars). A UUID v4 is generated when absent.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated comments list",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: z.array(MarketComment),
+            nextCursor: z.string().nullable(),
+            message: z.string(),
+          }),
+        },
+      },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+  },
+});
+
+const CreateCommentRequest = z
+  .object({
+    marketId: z.string().min(1).openapi({ description: "Target market ID" }),
+    body: z
+      .string()
+      .min(1)
+      .max(2000)
+      .openapi({ description: "Comment body (max 2 000 chars)" }),
+    authorAddress: z
+      .string()
+      .optional()
+      .openapi({ description: "Stellar address of the author" }),
+    outboundUrl: z
+      .string()
+      .url()
+      .optional()
+      .openapi({
+        description:
+          "Optional webhook URL that receives a POST with the comment payload. X-Correlation-Id is forwarded automatically.",
+      }),
+  })
+  .openapi("CreateCommentRequest");
+
+const CreateCommentResponse = z
+  .object({
+    data: z.object({
+      id: z.string(),
+      marketId: z.string(),
+      body: z.string(),
+      authorAddress: z.string().nullable(),
+      createdAt: z.string().datetime(),
+    }),
+    message: z.string(),
+  })
+  .openapi("CreateCommentResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/api/comments",
+  tags: ["Comments"],
+  summary: "Create a comment",
+  description:
+    "Creates a new comment. When `outboundUrl` is provided the service posts the comment payload to that URL, forwarding `X-Correlation-Id` so the receiving system can correlate the call.",
+  request: {
+    headers: z.object({
+      "x-correlation-id": z.string().optional().openapi({
+        description:
+          "Client-supplied correlation ID propagated to the outbound webhook call.",
+      }),
+    }),
+    body: {
+      content: { "application/json": { schema: CreateCommentRequest } },
+    },
+  },
+  responses: {
+    201: {
+      description: "Comment created",
+      content: {
+        "application/json": { schema: CreateCommentResponse },
+      },
+      headers: z.object({
+        "x-correlation-id": z.string().openapi({
+          description: "Resolved correlation ID, echoed back to the caller.",
+        }),
+      }),
     },
     400: {
       description: "Validation error",

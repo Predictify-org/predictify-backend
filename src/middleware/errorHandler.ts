@@ -1,20 +1,16 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { randomUUID } from "crypto";
-import { ZodError } from "zod";
-import { logger } from "../config/logger";
-import { AppError, ErrorCodes, isRouteError, HTTP_STATUS, toErrorEnvelope } from "../errors";
-import { getRequestId } from "../lib/requestContext";
-import type { NextFunction, Request, Response } from "express";
-import { randomUUID } from "crypto";
 import { logger } from "../config/logger";
 import { AppError, ErrorCodes, isRouteError, HTTP_STATUS, toErrorEnvelope } from "../errors";
 import { getRequestId } from "../lib/requestContext";
 
 function requestIdFrom(req: Request, fallback: string): string {
-  return getRequestId() ??
+  return (
+    getRequestId() ??
     (typeof (req as { id?: unknown }).id === "string" ? (req as { id?: string }).id : undefined) ??
-    fallback;
+    fallback
+  );
 }
 
 export function errorHandler(
@@ -25,7 +21,9 @@ export function errorHandler(
 ) {
   const correlationId =
     (req.headers["x-correlation-id"] as string) ??
-    (typeof (req as { id?: unknown }).id === "string" ? (req as { id?: string }).id : undefined) ??
+    (typeof (req as { id?: unknown }).id === "string"
+      ? (req as { id?: string }).id
+      : undefined) ??
     randomUUID();
   const reqId = requestIdFrom(req, correlationId);
 
@@ -42,14 +40,16 @@ export function errorHandler(
       logPayload.cause = err.cause;
     }
     logger.error(logPayload, "route_error");
-
     const envelope = toErrorEnvelope(err, correlationId);
     res.status(status).json({ error: envelope });
     return;
   }
 
   if (err instanceof AppError) {
-    logger.error({ err, path: req.path, method: req.method, correlationId, requestId: reqId }, "app_error");
+    logger.error(
+      { err, path: req.path, method: req.method, correlationId, requestId: reqId },
+      "app_error",
+    );
     res.status(err.status).json({
       error: {
         code: err.code,
@@ -62,7 +62,10 @@ export function errorHandler(
   }
 
   if (err instanceof ZodError) {
-    logger.warn({ err, path: req.path, method: req.method, correlationId, requestId: reqId }, "validation_error");
+    logger.warn(
+      { err, path: req.path, method: req.method, correlationId, requestId: reqId },
+      "validation_error",
+    );
     res.status(400).json({
       error: {
         code: ErrorCodes.VALIDATION_ERROR,
@@ -74,7 +77,10 @@ export function errorHandler(
     return;
   }
 
-  logger.error({ err, path: req.path, method: req.method, requestId: reqId }, "unknown_error");
+  logger.error(
+    { err, path: req.path, method: req.method, requestId: reqId },
+    "unknown_error",
+  );
   res.status(500).json({
     error: {
       code: ErrorCodes.INTERNAL_ERROR,

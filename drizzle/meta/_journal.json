@@ -29,6 +29,13 @@
       "when": 1785100000000,
       "tag": "0003_add_market_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1753718153907,
+      "tag": "0025_users_filter_idx",
+      "breakpoints": true
     }
   ]
 }

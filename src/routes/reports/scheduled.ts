@@ -24,7 +24,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { db } from "../../db";
 import { scheduledReports } from "../../db/schema";
 import { RouteErrorFactory } from "../../errors";
@@ -182,6 +182,20 @@ const listQuerySchema = z.object({
     .refine((val) => val > 0 && val <= 100, {
       message: "pageSize must be between 1 and 100",
     }),
+  active: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (val === undefined || val === "") return true;
+        return ["true", "false", "1", "0"].includes(val);
+      },
+      { message: "active must be 'true', 'false', '1', or '0'" },
+    )
+    .transform((val) => {
+      if (val === undefined || val === "") return undefined;
+      return val === "true" || val === "1";
+    }),
 });
 
 // ---------------------------------------------------------------------------
@@ -293,14 +307,19 @@ const listQuerySchema = z.object({
       throw RouteErrorFactory.badRequest("Invalid query parameters");
     }
 
-    const { page, pageSize } = parsed.data;
+    const { page, pageSize, active } = parsed.data;
     const offset = (page - 1) * pageSize;
+
+    const whereConditions = [eq(scheduledReports.userId, userId)];
+    if (active !== undefined) {
+      whereConditions.push(eq(scheduledReports.active, active));
+    }
 
     // Fetch total count for pagination metadata
     const [countResult] = await db
       .select({ count: db.$count(scheduledReports) })
       .from(scheduledReports)
-      .where(eq(scheduledReports.userId, userId));
+      .where(and(...whereConditions));
 
     const total = Number(countResult?.count ?? 0);
 
@@ -308,7 +327,7 @@ const listQuerySchema = z.object({
     const results = await db
       .select()
       .from(scheduledReports)
-      .where(eq(scheduledReports.userId, userId))
+      .where(and(...whereConditions))
       .orderBy(desc(scheduledReports.createdAt))
       .limit(pageSize)
       .offset(offset);

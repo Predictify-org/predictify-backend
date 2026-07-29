@@ -10,13 +10,33 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  stellarAddress: text("stellar_address").notNull().unique(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    stellarAddress: text("stellar_address").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    /**
+     * Composite index for GET /api/users keyset (cursor) pagination.
+     *
+     * The query orders by (created_at DESC, id DESC); without this index
+     * PostgreSQL falls back to a sequential scan + quicksort — O(n) I/O.
+     * With this index the planner uses an Index Scan Backward, reducing I/O
+     * to O(log n + page_size) and eliminating the sort node entirely.
+     *
+     * Created by migration 0025_users_filter_idx (CONCURRENTLY, no table lock).
+     * Rollback: DROP INDEX CONCURRENTLY IF EXISTS users_created_at_id_idx;
+     */
+    usersCreatedAtIdIdx: index("users_created_at_id_idx").on(
+      t.createdAt,
+      t.id,
+    ),
+  }),
+);
 
 export const authChallenges = pgTable("auth_challenges", {
   nonce: text("nonce").primaryKey(),
@@ -390,6 +410,8 @@ export const auditLogs = pgTable(
     walletAddress: text("wallet_address"),
     ip: text("ip").notNull(),
     correlationId: text("correlation_id").notNull(),
+    beforeState: jsonb("before_state"),
+    afterState: jsonb("after_state"),
     rateLimitContext: jsonb("rate_limit_context"),
     /** Snapshot of the relevant state immediately before the mutating action. */
     beforeState: jsonb("before_state"),
@@ -403,7 +425,15 @@ export const auditLogs = pgTable(
     auditLogsCorrelationIdx: index("audit_logs_correlation_idx").on(
       t.correlationId,
     ),
-    auditLogsCreatedAtIdx: index("audit_logs_created_at_idx").on(t.createdAt),
+    // Composite index for stable cursor pagination: ORDER BY created_at DESC, id DESC.
+    // The (created_at, id) compound key is unique and monotone, so a keyset cursor
+    // over it is stable even when rows with the same timestamp are inserted
+    // concurrently — the id tie-breaker ensures no row is skipped or duplicated
+    // across page boundaries.
+    auditLogsCreatedAtIdIdx: index("audit_logs_created_at_id_idx").on(
+      t.createdAt,
+      t.id,
+    ),
   }),
 );
 
@@ -556,6 +586,10 @@ export const scheduledReports = pgTable(
   (t) => ({
     scheduledReportsUserIdIdx: index("scheduled_reports_user_id_idx").on(t.userId),
     scheduledReportsActiveIdx: index("scheduled_reports_active_idx").on(t.active),
+    scheduledReportsUserCreatedAtIdx: index("scheduled_reports_user_created_at_idx").on(
+      t.userId,
+      t.createdAt.desc(),
+    ),
   }),
 );
 
@@ -594,4 +628,37 @@ export const marketWatchers = pgTable(
 
 export type MarketWatcher = typeof marketWatchers.$inferSelect;
 export type NewMarketWatcher = typeof marketWatchers.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Referrals
+// ---------------------------------------------------------------------------
+/**
+ * referrals — tracks referral codes created by users and their usage.
+ *
+ * Each row represents a referral code created by a user. When the code is
+ * used by another user, `referredUser` is populated with their Stellar address.
+ */
+export const referrals = pgTable(
+  "referrals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    referralCode: text("referral_code").notNull().unique(),
+    campaignId: text("campaign_id"),
+    referredUser: text("referred_user"),
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    referralsUserIdIdx: index("referrals_user_id_idx").on(t.userId),
+    referralsCodeIdx: index("referrals_code_idx").on(t.referralCode),
+  }),
+);
+
+export type Referral = typeof referrals.$inferSelect;
+export type NewReferral = typeof referrals.$inferInsert;
 

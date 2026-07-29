@@ -50,6 +50,9 @@ const baseSchema = z.object({
   // ── Markets CORS ─────────────────────────────────────────
   MARKETS_CORS_ALLOWED_ORIGINS: z.string().default(""),
 
+  // ── Notifications CORS ──────────────────────────────────
+  NOTIFICATIONS_CORS_ALLOWED_ORIGINS: z.string().default(""),
+
   // ── Geo-blocking ──────────────────────────────────────────
   GEO_BLOCKED_COUNTRIES: z.string().default("").transform((val) =>
     val.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -81,6 +84,10 @@ const baseSchema = z.object({
   // ── Invites rate limiting (per user, token bucket) ────────
   INVITES_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
   INVITES_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+
+  // ── Exports rate limiting (per user, token bucket) ────────
+  EXPORTS_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
+  EXPORTS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 
   // ── Settle confirmer ──────────────────────────────────────
   SETTLE_CONFIRMER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),

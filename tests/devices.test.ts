@@ -29,11 +29,13 @@ jest.mock("../src/config/logger", () => ({
 }));
 
 import { devicesRouter } from "../src/routes/devices";
+import { errorHandler } from "../src/middleware/errorHandler";
 
 function makeApp(): express.Express {
   const app = express();
   app.use(express.json());
   app.use("/api/me/devices", devicesRouter);
+  app.use(errorHandler);
   return app;
 }
 
@@ -67,5 +69,11 @@ describe("GET /api/me/devices", () => {
     const res = await request(makeApp()).get("/api/me/devices");
     expect(res.status).toBe(200);
     expect(res.body.data.devices).toEqual([]);
+  });
+
+  it("rejects unknown query parameters", async () => {
+    const res = await request(makeApp()).get("/api/me/devices?unknown=1");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
   });
 });

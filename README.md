@@ -47,6 +47,7 @@ Once running:
 | `GET /healthz/dependencies` | None | Shallow dependency probe — Postgres, Soroban RPC, Horizon, webhook queue (Redis). Cached for 5 s. Returns 200/207/503. |
 | `GET /api/health/ready` | None | **Deep readiness check** — runs four parallel probes with 1-second timeouts each. Returns 200 when ready, 503 when unready. |
 | `GET /api/indexer/health` | None | Indexer health — probes external dependencies (Postgres + Soroban RPC) and compares the persisted cursor against the chain tip. Returns `"ok"` / `"degraded"` / `"down"` with dependency statuses in `dependencies` and lag data in `data`. Always HTTP 200. Supports [ETag / conditional GET](#etag--conditional-get-caching). |
+| `GET /api/recommendations/health` | None | Recommendations subsystem health — probes the two runtime dependencies the recommendations pipeline relies on (Postgres + Soroban RPC). Returns 200 when all pass, 503 when any is down. Response shape mirrors `GET /api/predictions/health`. |
 
 ### `GET /api/health/ready` response
 
@@ -233,6 +234,16 @@ npm test -- tests/refreshToken.test.ts
 
 The refresh-token test suite covers rotation, expiry handling, reuse detection, logout family revocation, and hash-only storage.
 
+## Comments API
+
+Market comments are exposed at:
+
+- **`GET /api/markets/:id/comments`** — cursor-paginated comments for a market (`limit`, `cursor` params)
+- **`GET /api/comments`** — root list endpoint
+- **`POST /api/comments`** — create a comment; supply `outboundUrl` to dispatch a webhook
+
+Every handler generates or preserves an `X-Correlation-Id`, sanitises it (strips characters outside `[A-Za-z0-9\-_]`, max 128 chars), stores it in AsyncLocalStorage, echoes it in the response header, and propagates it to any outbound HTTP call via `fetchWithCorrelationId`. See [docs/comments-api.md](docs/comments-api.md) for the full runbook.
+
 ## Social graph
 
 Follow graph mutations are exposed at:
@@ -276,6 +287,63 @@ You can spin up the entire Predictify stack (API, Indexer, and PostgreSQL) using
 *   **Security:** By using `USER node` and `slim` base images, we reduce the attack surface.
 *   **Resilience:** The `depends_on` condition using `service_healthy` or `service_completed_successfully` ensures the database is ready and migrations are applied before application services boot, preventing race conditions.
 *   **Supply-Chain:** The base image is pinned by a specific digest. **Important:** When you run this, verify the digest matches your local build requirements, or update it to the latest `node:20-bookworm-slim` digest if you prefer the absolute latest patch version.
+
+## Structured Access Logging
+
+The API emits structured JSON access logs for several route groups via the `accessLog` middleware (`src/middleware/accessLog.ts`).
+
+### Logged routes
+
+| Route prefix      | Log name                |
+|-------------------|-------------------------|
+| `/api/users`      | `users_access_log`      |
+| `/api/auth`       | `auth_access_log`       |
+| `/api/predictions`| `predictions_access_log`|
+| `/api/markets`    | `markets_access_log`    |
+| `/api/tags`       | `tags_access_log`       |
+| `/api/feature-flags` | `feature_flags_access_log` |
+| `/api/referrals`  | `referrals_access_log`  |
+| `/api/admin`      | `admin_access_log`      |
+
+### Log fields
+
+Every access-log entry contains:
+
+| Field          | Type   | Description |
+|----------------|--------|-------------|
+| `req-id`       | string | Correlation / request ID (same as `correlationId`) |
+| `correlationId`| string | Resolved via `X-Correlation-Id` → `X-Request-Id` → `req.id` → new UUID |
+| `method`       | string | HTTP verb (GET, POST, etc.) |
+| `path`         | string | Request path (no query string) |
+| `statusCode`   | number | Final HTTP response status |
+| `status`       | number | Alias for `statusCode` |
+| `durationMs`   | number | Wall-clock response time in ms |
+| `latency`      | number | Alias for `durationMs` |
+| `ip`           | string | Client IP (X-Forwarded-For or direct) |
+| `size`         | number | Response body size in bytes (`Content-Length` or 0) |
+| `actor`        | string | Authenticated actor ID or `"anonymous"` |
+
+### Actor resolution
+
+- **Admin routes** (`/api/admin/*`): uses `req.adminAddress` (set by `requireAdmin` middleware after JWT verification with `role: "admin"`)
+- **User routes**: uses `req.user.id`
+- **Unauthenticated requests**: logged as `"anonymous"`
+
+### Correlation IDs
+
+The `X-Correlation-Id` response header is echoed back for every logged request. The resolution priority chain is:
+
+1. `X-Correlation-Id` request header (sanitised: alphanumeric + `-_` only, max 128 chars)
+2. `X-Request-Id` request header
+3. `req.id` (set by `pino-http`)
+4. Fresh UUID v4 (guaranteed fallback)
+
+### Security
+
+- Only `req.path` is logged (no query strings or full URLs)
+- `req.headers.authorization` and `req.headers.cookie` are redacted by the logger
+- Actor information is limited to a stable identifier (Stellar address or user ID)
+- Correlation IDs from clients are sanitised to prevent log injection
 
 ## License
 

@@ -27,6 +27,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { buildFingerprintInputs, computeFingerprint } from "../middleware/fingerprint";
+import { fingerprintRateLimiter } from "../middleware/rateLimit";
 import { getCorrelationId } from "../middleware/correlation";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
@@ -42,6 +43,7 @@ export const fingerprintRouter = Router();
  */
 fingerprintRouter.get(
   "/",
+  fingerprintRateLimiter,
   (req: Request, res: Response, next: NextFunction): void => {
     const correlationId = getCorrelationId() ?? "unknown";
     const reqId = getRequestId() ?? "unknown";

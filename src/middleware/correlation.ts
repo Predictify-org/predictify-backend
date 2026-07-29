@@ -146,3 +146,19 @@ export function correlationMiddleware(
 
 // ── Outbound call helper re-export ──────────────────────────────────────────
 export { fetchWithCorrelationId } from "../lib/http";
+
+// ── Auto-propagate on all outbound fetch calls ──────────────────────────────
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input: string | URL | globalThis.Request, init?: RequestInit) => {
+  const correlationId = getCorrelationId();
+  if (!correlationId) {
+    return originalFetch(input, init);
+  }
+
+  const headers = new Headers(init?.headers);
+  if (!headers.has(CORRELATION_ID_HEADER)) {
+    headers.set(CORRELATION_ID_HEADER, correlationId);
+  }
+
+  return originalFetch(input, { ...init, headers });
+};

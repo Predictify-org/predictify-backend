@@ -10,6 +10,11 @@
  * Rate-limit keying is based on the authenticated stellar address populated by
  * `requireAuth`, so quota is tracked independently per user, not per IP.
  *
+ * All routes are wrapped by `accessLog` which:
+ *   - Resolves a correlation ID via the priority chain (header → req.id → UUID)
+ *   - Echoes it back in the `X-Correlation-Id` response header
+ *   - Emits a structured `webhooks_access_log` entry on every response finish.
+ *
  * Endpoints:
  *   GET    /          — list webhook subscriptions
  *   POST   /          — create a new webhook subscription
@@ -24,9 +29,11 @@
 import { Router } from "express";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
+import { accessLog } from "../middleware/accessLog";
 import { webhookCors } from "../middleware/cors";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { webhooksRateLimiter } from "../middleware/rateLimit";
+import { correlationMiddleware, getCorrelationId } from "../middleware/correlation";
 
 // ---------------------------------------------------------------------------
 // Zod schemas — boundary validation
@@ -38,14 +45,21 @@ import { webhooksRateLimiter } from "../middleware/rateLimit";
 
 export const webhooksRouter = Router();
 
+// Structured access log — resolves correlation ID, echoes it back, and
+// emits a webhooks_access_log entry on every response finish.
+// Mounted first so the correlation ID is available to all downstream handlers.
+webhooksRouter.use(accessLog);
+
 // Enforce CORS allowlist before admin auth so unapproved origins are
 // rejected early without leaking auth challenge details.
 webhooksRouter.use(webhookCors());
+webhooksRouter.use(correlationMiddleware);
 webhooksRouter.use(webhooksRateLimiter);
 webhooksRouter.use(requireAdmin);
 
 webhooksRouter.get("/", async (req, res, next) => {
   const reqId = getRequestId();
+  const correlationId = getCorrelationId();
   const userId = req.user!.id;
 
   try {
@@ -55,7 +69,7 @@ webhooksRouter.get("/", async (req, res, next) => {
       .orderBy(webhookSubscriptions.createdAt);
 
     logger.debug(
-      { reqId, userId, count: rows.length },
+      { reqId, correlationId, userId, count: rows.length },
       "webhooks_listed",
     );
 
@@ -69,6 +83,7 @@ webhooksRouter.get("/", async (req, res, next) => {
 
 webhooksRouter.post("/", async (req, res, next) => {
   const reqId = getRequestId();
+  const correlationId = getCorrelationId();
   const userId = req.user!.id;
 
   try {
@@ -76,7 +91,7 @@ webhooksRouter.post("/", async (req, res, next) => {
     if (!parsed.success) {
       const issue = parsed.error.issues[0]!;
       logger.warn(
-        { reqId, userId, issues: parsed.error.issues },
+        { reqId, correlationId, userId, issues: parsed.error.issues },
         "webhooks_create_validation_failed",
       );
       return res.status(400).json({
@@ -84,6 +99,7 @@ webhooksRouter.post("/", async (req, res, next) => {
           code: "validation_error",
           message: issue.message,
           requestId: reqId,
+          correlationId: correlationId,
         },
       });
     }
@@ -97,7 +113,7 @@ webhooksRouter.post("/", async (req, res, next) => {
       .returning();
 
     logger.info(
-      { reqId, userId, subscriptionId: row.id },
+      { reqId, correlationId, userId, subscriptionId: row.id },
       "webhooks_subscription_created",
     );
 
@@ -113,6 +129,7 @@ webhooksRouter.post("/", async (req, res, next) => {
 
 webhooksRouter.get("/:id", async (req, res, next) => {
   const reqId = getRequestId();
+  const correlationId = getCorrelationId();
   const userId = req.user!.id;
 
   try {
@@ -128,7 +145,7 @@ webhooksRouter.get("/:id", async (req, res, next) => {
 
     if (!row) {
       logger.debug(
-        { reqId, userId, subscriptionId: idParse.data },
+        { reqId, correlationId, userId, subscriptionId: idParse.data },
         "webhooks_subscription_not_found",
       );
       throw RouteErrorFactory.notFound("Subscription not found");
@@ -144,6 +161,7 @@ webhooksRouter.get("/:id", async (req, res, next) => {
 
 webhooksRouter.patch("/:id", async (req, res, next) => {
   const reqId = getRequestId();
+  const correlationId = getCorrelationId();
   const userId = req.user!.id;
 
   try {
@@ -160,6 +178,7 @@ webhooksRouter.patch("/:id", async (req, res, next) => {
           code: "validation_error",
           message: issue.message,
           requestId: reqId,
+          correlationId: correlationId,
         },
       });
     }
@@ -180,7 +199,7 @@ webhooksRouter.patch("/:id", async (req, res, next) => {
       .returning();
 
     logger.info(
-      { reqId, userId, subscriptionId: updated.id },
+      { reqId, correlationId, userId, subscriptionId: updated.id },
       "webhooks_subscription_updated",
     );
 
@@ -194,6 +213,7 @@ webhooksRouter.patch("/:id", async (req, res, next) => {
 
 webhooksRouter.delete("/:id", async (req, res, next) => {
   const reqId = getRequestId();
+  const correlationId = getCorrelationId();
   const userId = req.user!.id;
 
   try {
@@ -211,7 +231,7 @@ webhooksRouter.delete("/:id", async (req, res, next) => {
     }
 
     logger.info(
-      { reqId, userId, subscriptionId: idParse.data },
+      { reqId, correlationId, userId, subscriptionId: idParse.data },
       "webhooks_subscription_deleted",
     );
 

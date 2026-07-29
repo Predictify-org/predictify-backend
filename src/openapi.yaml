@@ -3356,6 +3356,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /api/admin/users/{address}/impersonate:
+    post:
+      operationId: impersonateUser
+      tags:
+        - Admin
+      summary: Generate an impersonation JWT for a user (admin only)
+      description: >-
+        Admin-only endpoint that creates an audit-logged JWT allowing the
+        caller to act as the target user. The generated token carries a `user`
+        role assertion.
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: address
+          in: path
+      responses:
+        '200':
+          description: Impersonation token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                    required:
+                      - token
+                required:
+                  - data
+              examples:
+                success:
+                  value:
+                    data:
+                      token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHVVNFUjg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCIsInJvbGUiOiJ1c2VyIn0.example
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+              examples:
+                invalidAddress:
+                  value:
+                    error:
+                      code: validation_error
+                      details:
+                        - code: too_small
+                          message: Address must be a non-empty string
+                          path:
+                            - address
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+              examples:
+                notAdmin:
+                  value:
+                    error:
+                      code: forbidden
+                rateLimited:
+                  value:
+                    error:
+                      code: rate_limit_exceeded
   /api/admin/audit:
     get:
       operationId: getAdminAuditLog
