@@ -1,6 +1,6 @@
 import { db } from "../db/client";
 import { users, predictions, markets, claims } from "../db/schema";
-import { and, eq, desc, lt, count } from "drizzle-orm";
+import { and, eq, desc, lt, count, or } from "drizzle-orm";
 import { Result, ok, err } from "../errors/RouteError";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -107,17 +107,22 @@ export async function getUserPredictions(
 ) {
   const { status, limit, cursor } = opts;
 
-  let whereConditions = [eq(predictions.userId, userId)];
+  const whereConditions = [eq(predictions.userId, userId)];
 
   if (status) {
     whereConditions.push(eq(predictions.status, status));
   }
 
   if (cursor) {
-    const [cursorTime] = cursor.split("|");
-    if (cursorTime) {
-      whereConditions.push(lt(predictions.createdAt, new Date(cursorTime)));
-    }
+    const [cursorTime, cursorId] = cursor.split("|");
+    const cursorCreatedAt = new Date(cursorTime);
+
+    whereConditions.push(
+      or(
+        lt(predictions.createdAt, cursorCreatedAt),
+        and(eq(predictions.createdAt, cursorCreatedAt), lt(predictions.id, cursorId)),
+      )!,
+    );
   }
 
   const results = await db

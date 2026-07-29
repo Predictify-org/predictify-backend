@@ -27,14 +27,17 @@ describe("GET /api/users/:address/predictions", () => {
       indexedLedger: 0,
     });
 
+    const baseTime = new Date("2026-01-01T00:00:00.000Z");
+
     for (let i = 0; i < 25; i++) {
       await db.insert(predictions).values({
+        id: `00000000-0000-4000-8000-${(i + 1).toString().padStart(12, "0")}`,
         marketId: "market-1",
         userId: user!.id,
         outcome: i % 2 === 0 ? "yes" : "no",
         amount: "100",
         status: i < 10 ? "pending" : i < 15 ? "confirmed" : "won",
-        createdAt: new Date(Date.now() - i * 60 * 60 * 1000),
+        createdAt: new Date(baseTime.getTime() - Math.floor(i / 2) * 60 * 60 * 1000),
       });
     }
   });
@@ -48,7 +51,7 @@ describe("GET /api/users/:address/predictions", () => {
 
   it("should return 404 for unknown address", async () => {
     const res = await request(createApp()).get(
-      "/api/users/GBUNKKNOWN000000000000000000000000000000000000000000000000/predictions"
+      `/api/users/${"G" + "A".repeat(55)}/predictions`
     );
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("not_found");
@@ -84,6 +87,40 @@ describe("GET /api/users/:address/predictions", () => {
     );
     expect(page2.status).toBe(200);
     expect(page2.body.data.length).toBeGreaterThan(0);
+  });
+
+
+  it("should not skip predictions that share a cursor timestamp", async () => {
+    const seenIds = new Set<string>();
+    let cursor: string | null = null;
+
+    for (let page = 0; page < 9; page++) {
+      const res = await request(createApp()).get(
+        `/api/users/${testAddress}/predictions?limit=3${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+      );
+
+      expect(res.status).toBe(200);
+      for (const prediction of res.body.data) {
+        expect(seenIds.has(prediction.id)).toBe(false);
+        seenIds.add(prediction.id);
+      }
+
+      cursor = res.body.nextCursor;
+      if (!cursor) {
+        break;
+      }
+    }
+
+    expect(seenIds.size).toBe(25);
+  });
+
+  it("should reject malformed cursors", async () => {
+    const res = await request(createApp()).get(
+      `/api/users/${testAddress}/predictions?cursor=not-a-cursor`
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
   });
 
   it("should validate address format", async () => {

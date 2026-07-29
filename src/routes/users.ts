@@ -37,17 +37,20 @@ usersRouter.get("/:address/predictions", async (req: Request, res: Response, nex
 
     try {
       stellarAddressSchema.parse(address);
-    } catch (e) {
+    } catch {
       return res.status(400).json({ error: { code: "invalid_address" } });
     }
 
     const querySchema = z.object({
       status: z.enum(["pending", "confirmed", "won", "lost", "claimed"]).optional(),
-      cursor: z.string().optional(),
+      cursor: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+        .optional(),
       limit: z.coerce.number().int().min(1).max(100),
     });
 
-    const query = querySchema.parse({ status, cursor, limit: parseInt(limit as string) });
+    const query = querySchema.parse({ status, cursor, limit });
 
     const user = await getUserByAddress(address);
     if (!user) {
