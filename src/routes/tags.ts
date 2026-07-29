@@ -1,5 +1,8 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { z } from "zod";
 import { accessLog } from "../middleware/accessLog";
+import { logger } from "../config/logger";
+import { getMarketTags } from "../repositories/marketRepository";
 
 export const tagsRouter = Router();
 tagsRouter.use(accessLog);
