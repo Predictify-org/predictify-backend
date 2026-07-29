@@ -11,6 +11,16 @@ export const registry = new OpenAPIRegistry();
 
 // ── Reusable component schemas ───────────────────────────────────────────────
 
+/**
+ * Shared header schema for endpoints that accept an Idempotency-Key.
+ * Detects duplicate submissions so the client can safely retry on network errors.
+ */
+const IdempotencyKeyHeader = z.object({
+  "Idempotency-Key": z.string().min(1).max(255).openapi({
+    description: "Unique idempotency key for safe retries. See RFC 7231 §6.3.2.",
+  }),
+});
+
 export const ErrorBody = registry.register(
   "ErrorBody",
   z
@@ -281,6 +291,7 @@ registry.registerPath({
     200: {
       description: "Tokens issued",
       content: {
+        "application/json": {
           schema: TokenPair,
           examples: {
             tokensIssued: {
