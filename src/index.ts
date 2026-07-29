@@ -19,6 +19,7 @@ import { dependenciesRouter } from "./routes/health/dependencies";
 import { versionRouter } from "./routes/health/version";
 import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
+import { adminRouter } from "./routes/admin";
 import { recommendationsRouter } from "./routes/recommendations";
 import { recommendationsHealthRouter } from "./routes/recommendations/health";
 import { tagsRouter } from "./routes/tags";
