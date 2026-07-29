@@ -9,12 +9,14 @@ import { marketResolverWorker } from "./workers/marketResolver";
 import { backupVerificationWorker } from "./workers/backupVerificationWorker";
 import { reconciliationWorker } from "./workers/reconciliationWorker";
 import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
+import { startPredictionsConfirmer } from "./workers/predictionsConfirmer";
 import { drainSearchRequests } from "./routes/search";
 import { drainExportsRequests } from "./routes/exports";
 
 const app = createApp();
 let webhookWorker: WebhookWorker | null = null;
 let probeHandle: ReturnType<typeof setInterval> | null = null;
+let predictionsConfirmerHandle: ReturnType<typeof setInterval> | null = null;
 
 connectWithRetry()
   .then(() => {
@@ -24,6 +26,7 @@ connectWithRetry()
     backupVerificationWorker.start();
     reconciliationWorker.start();
     startSlowQueryAlerter();
+    predictionsConfirmerHandle = startPredictionsConfirmer();
     probeHandle = startIndexerHealthProbe();
 
     const server = app.listen(env.PORT, () => {

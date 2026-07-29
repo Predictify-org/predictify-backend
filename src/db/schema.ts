@@ -184,6 +184,17 @@ export const predictions = pgTable("predictions", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  /**
+   * Number of confirmation attempts made by the predictionsConfirmer worker.
+   * Incremented each tick when no matching indexer event is found.
+   * After MAX_CONFIRM_ATTEMPTS (3) the prediction is marked as failed.
+   */
+  confirmAttempts: integer("confirm_attempts").notNull().default(0),
+  /**
+   * Error message from the most recent failed confirmation attempt.
+   * Set when the prediction transitions to failed after exhausting all attempts.
+   */
+  lastError: text("last_error"),
 });
 
 /**
