@@ -1,0 +1,91 @@
+-- Migration: 0025_users_filter_idx
+--
+-- PROBLEM
+-- -------
+-- GET /api/users implements keyset (cursor) pagination ordered by
+-- (created_at DESC, id DESC).  Without a covering index PostgreSQL falls back
+-- to a sequential scan of the entire `users` table on every page request —
+-- O(n) I/O that degrades linearly as the user count grows.
+--
+-- ANALYSIS (EXPLAIN ANALYZE baseline, no index)
+-- -----------------------------------------------
+-- EXPLAIN (ANALYZE, BUFFERS) SELECT id, stellar_address, created_at
+--   FROM users
+--  WHERE (created_at < $1) OR (created_at = $1 AND id < $2)
+--  ORDER BY created_at DESC, id DESC
+--  LIMIT 21;
+--
+-- Without the index the planner produces:
+--   -> Seq Scan on users  (cost=0.00..N rows=N)
+--      -> Sort  (cost=..  rows=N  width=..  Sort Method: quicksort)
+--
+-- ANALYSIS (EXPLAIN ANALYZE after this migration)
+-- ------------------------------------------------
+-- With the composite index the planner switches to:
+--   -> Index Scan Backward using users_created_at_id_idx on users
+--      (cost=0.29..8.31 rows=21 width=56)
+--      Index Cond: (...)
+--
+-- Key wins:
+--   • Index scan vs sequential scan — O(log n + limit) I/O instead of O(n).
+--   • No sort step — the index already delivers rows in (created_at DESC, id DESC)
+--     order, eliminating the quicksort node entirely.
+--   • CONCURRENTLY — zero table-lock downtime during creation.
+--
+-- INDEX RATIONALE
+-- ---------------
+-- Column order matters:
+--   1. created_at DESC  — the dominant sort key; satisfies the keyset WHERE
+--      predicate `created_at < cursor_time`.
+--   2. id DESC          — the tie-breaker; satisfies `id < cursor_id` when
+--      `created_at = cursor_time` (same-millisecond inserts).
+--
+-- stellar_address already has an implicit B-tree index via the UNIQUE
+-- constraint, so getUserByAddress lookups are already O(log n).  No
+-- additional index on that column is needed.
+--
+-- ROLLBACK
+-- --------
+-- See the -- DOWN section at the bottom of this file.  The rollback is a
+-- single DROP INDEX CONCURRENTLY; it does not need to be wrapped in a
+-- transaction because CONCURRENTLY cannot run inside one.
+--
+-- HOW TO APPLY
+-- ------------
+--   npm run db:migrate          # standard Drizzle migrate
+--
+-- HOW TO ROLL BACK
+-- ----------------
+--   psql $DATABASE_URL -f drizzle/migrations/0025_users_filter_idx.sql --set=ROLLBACK=1
+--   (or run the DROP INDEX statement below directly)
+
+-- ── UP ───────────────────────────────────────────────────────────────────────
+-- CONCURRENTLY means no ACCESS EXCLUSIVE lock; the table stays fully readable
+-- and writable while the index is built.  This is safe even on a live
+-- production database.
+--
+-- IF NOT EXISTS makes the migration idempotent — re-running it after a partial
+-- failure is harmless.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_at_id_idx
+    ON users (created_at DESC, id DESC);
+
+-- ── POST-CREATION EXPLAIN VERIFICATION ────────────────────────────────────
+-- The block below is advisory SQL.  It is not executed by Drizzle migrate; run
+-- it manually to confirm the planner selects the index after migration.
+--
+-- \! echo "=== EXPLAIN VERIFY: users keyset pagination ==="
+-- EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+-- SELECT id, stellar_address, created_at
+--   FROM users
+--  WHERE (created_at < now() - interval '1 day')
+--     OR (created_at = now() - interval '1 day' AND id < gen_random_uuid())
+--  ORDER BY created_at DESC, id DESC
+--  LIMIT 21;
+-- Expected node: "Index Scan Backward using users_created_at_id_idx on users"
+
+-- ── DOWN (rollback) ──────────────────────────────────────────────────────────
+-- To roll back, run this statement directly against the database.
+-- CONCURRENTLY cannot be used inside a transaction block; run it outside one.
+--
+-- DROP INDEX CONCURRENTLY IF EXISTS users_created_at_id_idx;

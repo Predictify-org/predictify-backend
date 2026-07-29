@@ -10,13 +10,33 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  stellarAddress: text("stellar_address").notNull().unique(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    stellarAddress: text("stellar_address").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    /**
+     * Composite index for GET /api/users keyset (cursor) pagination.
+     *
+     * The query orders by (created_at DESC, id DESC); without this index
+     * PostgreSQL falls back to a sequential scan + quicksort — O(n) I/O.
+     * With this index the planner uses an Index Scan Backward, reducing I/O
+     * to O(log n + page_size) and eliminating the sort node entirely.
+     *
+     * Created by migration 0025_users_filter_idx (CONCURRENTLY, no table lock).
+     * Rollback: DROP INDEX CONCURRENTLY IF EXISTS users_created_at_id_idx;
+     */
+    usersCreatedAtIdIdx: index("users_created_at_id_idx").on(
+      t.createdAt,
+      t.id,
+    ),
+  }),
+);
 
 export const authChallenges = pgTable("auth_challenges", {
   nonce: text("nonce").primaryKey(),

@@ -28,6 +28,22 @@ export interface PredictionEntry {
   createdAt: string;
 }
 
+export interface CurrentUserProfile {
+  stellarAddress: string;
+  createdAt: string;
+  totals: {
+    prediction_count: number;
+    claim_count: number;
+  };
+}
+
+export interface ProfileTotals {
+  totalPredictions: number;
+  totalAmountStaked: string;
+  wins: number;
+  losses: number;
+}
+
 export interface UserProfile {
   id: string;
   stellarAddress: string;
@@ -36,16 +52,15 @@ export interface UserProfile {
   totals: ProfileTotals;
 }
 
-export interface CurrentUserProfile {
-  id?: string;
-  stellarAddress: string;
-  createdAt: string;
-  predictions?: PredictionEntry[];
-  totals: ProfileTotals;
-}
-
 // ── Service functions ─────────────────────────────────────────────────────
 
+/**
+ * Look up a public user profile by Stellar address.
+ *
+ * Returns `null` when no user with that address exists.
+ *
+ * @param stellarAddress - The Stellar account address to look up.
+ */
 export async function getUserProfile(
   stellarAddress: string,
 ): Promise<UserProfile | null> {
@@ -55,7 +70,7 @@ export async function getUserProfile(
 
 /**
  * Returns the authenticated user's profile (stellarAddress, createdAt) along
- * with aggregate counts of their predictions. Two queries run
+ * with aggregate counts of their predictions.  Two queries run
  * in parallel via Promise.all:
  */
 export async function getCurrentUserProfile(userId: string): Promise<Result<CurrentUserProfile>> {
@@ -90,13 +105,8 @@ export async function getCurrentUserProfile(userId: string): Promise<Result<Curr
     id: user.id,
     stellarAddress: user.stellarAddress,
     createdAt: user.createdAt.toISOString(),
-    predictions: [],
     totals: {
-      totalPredictions: prediction_count,
-      totalAmountStaked: "0",
-      wins: 0,
-      losses: 0,
-      prediction_count: totalPredictions,
+      prediction_count,
       claim_count: 0,
     },
   });
@@ -232,6 +242,11 @@ export interface UserListRow {
 /**
  * Return a cursor-paginated list of all users, sorted DESC by (createdAt, id)
  * for stable ordering even when two users share the same timestamp.
+ *
+ * This query is served by the `users_created_at_id_idx` composite index
+ * (migration 0025_users_filter_idx), which switches the planner from a
+ * sequential scan + quicksort (O(n)) to an Index Scan Backward (O(log n +
+ * limit)), eliminating the sort node entirely.
  *
  * Cursor format: opaque base64url token encoding `{ sortValue: createdAt ISO,
  * id }` via the shared `encodeCursor` / `decodeCursor` helpers in
