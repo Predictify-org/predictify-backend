@@ -110,7 +110,7 @@ export async function getAdminUserView(address: string, db: DB): Promise<AdminUs
         createdAt: disputes.createdAt,
       })
       .from(disputes)
-      .where(eq(disputes.userId, user.id)),
+      .where(eq(disputes.openedBy, user.id)),
   ]);
 
   return {

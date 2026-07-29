@@ -1,9 +1,7 @@
-import { rpc } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
-import { db, pool } from "../db/client";
-import { createDbCursorStore } from "../db/indexerRepository";
-import { pollOnce, type PollDeps } from "../services/indexerService";
+import { pool } from "../db/client";
+import { indexerService } from "../services/indexerService";
 
 /**
  * Long-running Soroban indexer worker.
@@ -13,18 +11,6 @@ import { pollOnce, type PollDeps } from "../services/indexerService";
  * new ticks, lets the in-flight tick finish, then exits cleanly.
  */
 async function main(): Promise<void> {
-  const server = new rpc.Server(env.SOROBAN_RPC_URL, {
-    allowHttp: env.SOROBAN_RPC_URL.startsWith("http://"),
-  });
-
-  const deps: PollDeps = {
-    rpc: server,
-    store: createDbCursorStore(db),
-    contractId: env.PREDICTIFY_CONTRACT_ID,
-    startLedger: env.INDEXER_START_LEDGER,
-    logger,
-  };
-
   let shuttingDown = false;
   let activeTick: Promise<unknown> = Promise.resolve();
 
@@ -57,7 +43,7 @@ async function main(): Promise<void> {
 
   while (!shuttingDown) {
     try {
-      activeTick = pollOnce(deps);
+      activeTick = indexerService.pollOnce();
       await activeTick;
     } catch (err) {
       // Cursor is untouched on failure; log and retry on the next tick.

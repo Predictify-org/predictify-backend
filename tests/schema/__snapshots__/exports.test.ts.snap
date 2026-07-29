@@ -1,0 +1,9 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Exports API Schema Stability should maintain a stable response shape for validation errors 1`] = `
+{
+  "error": {
+    "code": "unauthenticated",
+  },
+}
+`;

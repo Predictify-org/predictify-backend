@@ -1,7 +1,6 @@
-import { createDbCursorStore } from "../src/db/indexerRepository";
+import { createDbCursorStore, type IndexedEvent } from "../src/db/indexerRepository";
 import { contractEvents, indexerCursor } from "../src/db/schema";
 import type { Database } from "../src/db/client";
-import type { IndexedEvent } from "../src/services/indexerService";
 
 const sampleEvent: IndexedEvent = {
   id: "evt-1",
@@ -9,8 +8,8 @@ const sampleEvent: IndexedEvent = {
   contractId: "C...",
   type: "contract",
   txHash: "tx-1",
-  ledgerClosedAt: new Date("2024-01-01T00:00:00Z"),
-  topic: ["xdr:t"],
+  ledgerClosedAt: 1718919600, // Unix epoch seconds
+  topic: '["xdr:t"]',
   value: "xdr:v",
 };
 

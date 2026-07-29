@@ -1,8 +1,11 @@
 import { Worker, Job } from "bullmq";
 import { eq } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { Db } from "../db";
 import { webhookDeliveries, webhookSubscriptions } from "../db/schema";
-import { attemptDelivery, getOverdueDeliveries } from "../services/webhookDispatcher";
+import {
+  attemptDelivery,
+  getOverdueDeliveries,
+} from "../services/webhookDispatcher";
 import { logger } from "../config/logger";
 import { redisConnection, webhookQueueName, webhookQueue } from "../queue";
 
@@ -16,11 +19,11 @@ export interface WorkerOptions {
 }
 
 export class WebhookWorker {
-  private readonly db: NodePgDatabase;
+  private readonly db: Db;
   private readonly concurrency: number;
   private worker: Worker | null = null;
 
-  constructor(db: NodePgDatabase, opts: WorkerOptions = {}) {
+  constructor(db: Db, opts: WorkerOptions = {}) {
     this.db = db;
     this.concurrency = opts.concurrency ?? 10;
   }
@@ -85,22 +88,32 @@ export class WebhookWorker {
             .where(eq(webhookDeliveries.id, delivery.id));
 
           if (updated && updated.status === "failed") {
-            const delay = Math.max(0, updated.nextRetryAt.getTime() - Date.now());
-            await webhookQueue.add("deliver", { deliveryId: delivery.id }, { delay });
+            const delay = Math.max(
+              0,
+              updated.nextRetryAt.getTime() - Date.now(),
+            );
+            await webhookQueue.add(
+              "deliver",
+              { deliveryId: delivery.id },
+              { delay },
+            );
           }
 
           throw new Error(result.error || "Delivery failed");
         }
       },
-      { 
-        // @ts-expect-error IORedis types conflict with BullMQ
-        connection: redisConnection, 
-        concurrency: this.concurrency 
-      }
+      {
+        // IORedis types conflict with BullMQ
+        connection: redisConnection,
+        concurrency: this.concurrency,
+      },
     );
 
     this.worker.on("failed", (job, err) => {
-      logger.error({ deliveryId: job?.data.deliveryId, err: err.message }, "webhook.worker.job_failed");
+      logger.error(
+        { deliveryId: job?.data.deliveryId, err: err.message },
+        "webhook.worker.job_failed",
+      );
     });
   }
 

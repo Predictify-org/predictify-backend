@@ -21,6 +21,7 @@ All errors are returned as JSON with a single top-level `error` property.
 | Generic bad request (`err.status=400`) | 400       | `request_failed`   | —                 |
 | Resource not found (`err.status=404`)  | 404       | `not_found`        | —                 |
 | Conflict (`err.status=409`)            | 409       | `conflict`         | —                 |
+| Auth request timeout                    | 408       | `timeout`          | —                 |
 | Unprocessable (`err.status=422`)       | 422       | `unprocessable`    | —                 |
 | Other 4xx with `.code`               | as-is     | `err.code`         | —                 |
 | Other 4xx without `.code`            | as-is     | `request_failed`   | —                 |
@@ -31,3 +32,4 @@ All errors are returned as JSON with a single top-level `error` property.
 - Internal error details are **never** leaked to the client — the 500 response is always `{ error: { code: "internal_error" } }`.
 - The `details` array on `validation_error` mirrors the Zod `issues` array. Each item contains `path`, `message`, and optionally `code`.
 - `err.status` is checked for numeric status codes. `err.code` is used as the error code for 4xx responses when set.
+- `/api/auth` requests have a 15 s per-request timeout. Timed-out requests return HTTP 408 with `error.code: "timeout"` and abort downstream work through `res.locals.abortSignal`.

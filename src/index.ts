@@ -5,25 +5,87 @@ import { v4 as uuidv4 } from "uuid";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { metricsMiddleware } from "./metrics/httpMetrics";
+import { metricsHistogramMiddleware } from "./middleware/metricsHistogram";
+import { correlationMiddleware } from "./middleware/correlation";
+import { deprecationMiddleware } from "./middleware/deprecation";
+import { fingerprintMiddleware } from "./middleware/fingerprint";
+import { accessLog } from "./middleware/accessLog";
 import { idempotency } from "./middleware/idempotency";
+import { defaultBodySizeLimitMiddleware, webhookBodySizeLimitMiddleware } from "./middleware/bodySize";
 import { healthRouter } from "./routes/health";
-import dependenciesRouter from "./routes/healthz/dependencies";
+import healthzDependenciesRouter from "./routes/healthz/dependencies";
+import { createReadyRouter } from "./routes/health/ready";
+import { dependenciesRouter } from "./routes/health/dependencies";
+import { versionRouter } from "./routes/health/version";
+import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
+import { adminRouter } from "./routes/admin";
+import { recommendationsRouter } from "./routes/recommendations";
+import { recommendationsHealthRouter } from "./routes/recommendations/health";
+import { tagsRouter } from "./routes/tags";
+import { auditRouter } from "./routes/audit";
 import { marketsRouter } from "./routes/markets";
+import { commentsRouter } from "./routes/comments";
 import { usersRouter } from "./routes/users";
+import { predictionsRouter } from "./routes/predictions";
+import { usersHealthRouter } from "./routes/users/health";
+import { exportsPredictionsRouter } from "./routes/exports/predictions";
+import { userPortfolioRouter } from "./routes/users/portfolio";
+import { statsRouter } from "./routes/stats";
+import { userStatsRouter } from "./routes/users/stats";
+import { devicesRouter } from "./routes/devices";
+import { devicesRevokeRouter } from "./routes/devicesRevoke";
+import { featureFlagsRouter } from "./routes/feature-flags";
+import { adminFeatureFlagsRouter } from "./routes/admin/featureFlags";
+import { adminUsersRouter } from "./routes/adminUsers";
+import { adminNotesRouter } from "./routes/admin/users/notes";
 import { leaderboardRouter } from "./routes/leaderboard";
+import { globalLeaderboardRouter } from "./routes/leaderboard/global";
 import { createDocsRouter } from "./routes/docs";
+import { searchRouter } from "./routes/search";
+
+import { sessionsRouter } from "./routes/me/sessions";
+import { referralsRouter } from "./routes/referrals";
 import { notificationsRouter } from "./routes/notifications";
 import { socialRouter } from "./routes/social";
+import { webhooksRouter } from "./routes/webhooks";
+import { webhooksHealthRouter } from "./routes/webhooks/health";
 import { adminAuditRouter } from "./routes/admin/audit";
+import { adminAuditExportRouter } from "./routes/admin/audit/export";
+import { auditCountsRouter } from "./routes/audit/counts";
+import { auditHealthRouter } from "./routes/audit/health";
+import { userAuditRouter } from "./routes/audit/user";
+import { adminHealthRouter } from "./routes/admin/health";
+import { adminMarketsRouter } from "./routes/admin/markets";
+import { adminSchemaVersionsRouter } from "./routes/admin/schema-versions";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestContextStorage } from "./lib/requestContext";
 import { REQUEST_ID_HEADER } from "./lib/http";
 import { register } from "./metrics/registry";
-import { connectWithRetry, closeDb } from "./db/client";
+import { connectWithRetry, closeDb, db } from "./db/client";
 import { stopScheduler } from "./services/scheduler";
+import { startIndexerHealthProbe, stopIndexerHealthProbe } from "./jobs/indexerHealthProbe";
+import { indexerHealthRouter } from "./routes/indexer/health";
+import { indexerCursorRouter } from "./routes/indexer/cursor";
+import { WebhookWorker } from "./workers/webhookWorker";
+import { marketResolverWorker } from "./workers/marketResolver";
+import { backupVerificationWorker } from "./workers/backupVerificationWorker";
+import { reconciliationWorker } from "./workers/reconciliationWorker";
+import { rateLimitRouter } from "./routes/rate-limit";
+import { adminRateLimitInspectRouter } from "./routes/admin/rate-limit/inspect";
+import { quotaRequestsRouter } from "./routes/quota/requests";
+import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
+import { reportsRouter } from "./routes/reports";
+import { exportsRouter } from "./routes/exports";
+import { fingerprintRouter } from "./routes/fingerprint";
+import { alertsRouter } from "./routes/alerts";
+import { gracefulShutdown } from "./lifecycle/shutdown";
+import { perUserConcurrency } from "./middleware/perUserConcurrency";
 
-const docsEnabled = env.NODE_ENV !== "production" || process.env.ENABLE_DOCS === "true";
+
+const docsEnabled =
+  process.env.ENABLE_DOCS === "true" ||
+  (env.NODE_ENV !== "test" && env.NODE_ENV !== "production");
 
 const REQUEST_ID_MAX_LENGTH = 64;
 
@@ -37,6 +99,8 @@ function sanitizeRequestId(raw: string): string | undefined {
 export function createApp(): express.Express {
   const app = express();
 
+  app.set("etag", false);
+
   if (env.TRUST_PROXY) {
     app.set("trust proxy", true);
   }
@@ -46,7 +110,6 @@ export function createApp(): express.Express {
   }
 
   app.use(helmet());
-  app.use(express.json({ limit: "256kb" }));
 
   app.use(
     pinoHttp({
@@ -74,9 +137,36 @@ export function createApp(): express.Express {
     },
   );
 
+  // Resolve, echo, and propagate X-Correlation-Id for every request.
+  // Runs after the ALS context is established so correlationMiddleware can
+  // extend the existing store with the `correlationId` field.
+  app.use(correlationMiddleware);
+  app.use(deprecationMiddleware);
+
+  app.use("/api/admin/webhooks", webhookBodySizeLimitMiddleware);
+  app.use(defaultBodySizeLimitMiddleware);
+
+  // Compute a stable SHA-256 fingerprint for every request.
+  // Mounted after body-parsing middleware so that req.body is available
+  // for the fingerprint body-hash computation, and after ALS context +
+  // correlationMiddleware so correlationId is available for logging.
+  app.use(fingerprintMiddleware);
+
   app.use(metricsMiddleware);
+  app.use(metricsHistogramMiddleware);
   app.use("/health", healthRouter);
-  app.use("/healthz/dependencies", dependenciesRouter);
+  app.use("/healthz/dependencies", healthzDependenciesRouter);
+  app.use("/api/health/ready", createReadyRouter({ db, redis: redisConnection }));
+  app.use("/api/health/dependencies", dependenciesRouter);
+  app.use("/api/health/version", versionRouter);
+  app.use("/api/indexer", indexerHealthRouter);
+  app.use("/api/indexer/cursor", indexerCursorRouter);
+
+  // Cap in-flight concurrent requests per user/IP before any API route handler
+  // runs. This prevents a single identity from exhausting the thread / DB-pool
+  // by holding many connections open simultaneously.
+  // Configured via MAX_CONCURRENT_REQUESTS_PER_USER (default: 10).
+  app.use("/api", perUserConcurrency);
 
   const mutationMethods = ["POST", "PATCH"] as const;
   app.use("/api", (req, res, next) =>
@@ -86,12 +176,55 @@ export function createApp(): express.Express {
   );
 
   app.use("/api/auth", authRouter);
+  app.use("/api/recommendations/health", recommendationsHealthRouter);
+  app.use("/api/recommendations", recommendationsRouter);
+  app.use("/api/tags", tagsRouter);
+  app.use("/api/audit", auditRouter);
   app.use("/api/markets", marketsRouter);
+  app.use("/api/markets", commentsRouter);
+  app.use("/api/comments", commentsRouter);
+  app.use("/api/predictions", predictionsRouter);
   app.use("/api/leaderboard", leaderboardRouter);
+  app.use("/api/leaderboard/global", globalLeaderboardRouter);
+  app.use("/api/rate-limit", rateLimitRouter);
+  app.use("/api/search", searchRouter);
+  app.use("/api/quota/requests", quotaRequestsRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/webhooks/health", webhooksHealthRouter);
+  app.use("/api/users/health", usersHealthRouter);
+  app.use("/api/stats", statsRouter);
   app.use("/api/users", socialRouter);
+  app.use("/api/users", userPortfolioRouter);
+  app.use("/api/users", userStatsRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/predictions", predictionsRouter);
+  app.use("/api/me/devices", devicesRouter);
+
+  // Structured access logging for /api/admin — captures req-id, latency,
+  // status, response size, and actor for every admin request.
+  // Mounted before the first admin route registration so the finish handler
+  // is set up ahead of actual route handlers.
+  app.use("/api/admin", accessLog);
+  app.use("/api/me/devices/:id/revoke", devicesRevokeRouter);
+  app.use("/api/me/sessions", sessionsRouter);
   app.use("/api/admin/audit", adminAuditRouter);
+  app.use("/api/admin/audit", adminAuditExportRouter);
+  app.use("/api/audit/health", auditHealthRouter);
+  app.use("/api/audit/counts", auditCountsRouter);
+  app.use("/api/audit/user", userAuditRouter);
+  app.use("/api/admin/health", adminHealthRouter);
+  app.use("/api/admin/users", adminUsersRouter);
+  app.use("/api/admin/users", adminNotesRouter);
+  app.use("/api/feature-flags", featureFlagsRouter);
+  app.use("/api/admin/feature-flags", adminFeatureFlagsRouter);
+  app.use("/api/admin/markets", adminMarketsRouter);
+  app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
+  app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
+  app.use("/api/reports", reportsRouter);
+  app.use("/api/exports", exportsRouter);
+  app.use("/api/fingerprint", fingerprintRouter);
+  app.use("/api/alerts", alertsRouter);
+  app.use("/api/referrals", referralsRouter);
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
@@ -113,35 +246,56 @@ export function createApp(): express.Express {
 
 if (require.main === module) {
   const app = createApp();
+  let webhookWorker: WebhookWorker | null = null;
 
   connectWithRetry()
     .then(() => {
+      webhookWorker = new WebhookWorker(db);
+      webhookWorker.start();
+      marketResolverWorker.start();
+      backupVerificationWorker.start();
+      reconciliationWorker.start();
+      startSlowQueryAlerter();
+      startIndexerHealthProbe();
+
       app.listen(env.PORT, () => {
         logger.info({ port: env.PORT, env: env.NODE_ENV }, "predictify-backend listening");
-        logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
+        if (env.ENABLE_DOCS) {
+          logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
+        }
       });
+
+      const handleShutdown = async (signal: string) => {
+        logger.info({ signal }, "shutdown_signal_received");
+        setAuthDraining(true);
+
+        const forceExit = setTimeout(() => {
+          logger.warn("Forced exit after shutdown timeout");
+          process.exit(1);
+        }, 10000).unref();
+
+        try {
+          logger.info("Draining in-flight /api/auth requests...");
+          await waitForAuthDrain(5000);
+          logger.info("In-flight /api/auth requests drained successfully");
+
+          stopScheduler();
+          await closeDb();
+          clearTimeout(forceExit);
+          logger.info("Shutdown completed successfully");
+          process.exit(0);
+        } catch (err) {
+          logger.error({ err }, "Error during shutdown");
+          clearTimeout(forceExit);
+          process.exit(1);
+        }
+      };
+
+      process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+      process.on("SIGINT", () => handleShutdown("SIGINT"));
     })
     .catch((err) => {
       logger.fatal({ err }, "Failed to start server");
       process.exit(1);
     });
-
-  process.on("SIGTERM", async () => {
-    logger.info("SIGTERM received, shutting down");
-    const forceExit = setTimeout(() => {
-      logger.warn("Forced exit after shutdown timeout");
-      process.exit(1);
-    }, 5000).unref();
-
-    stopScheduler();
-    await closeDb();
-    clearTimeout(forceExit);
-    process.exit(0);
-  });
-
-  process.on("SIGINT", () => {
-    logger.info("SIGINT received, shutting down gracefully");
-    stopScheduler();
-    process.exit(0);
-  });
 }

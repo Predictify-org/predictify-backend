@@ -1,3 +1,6 @@
+  
+  
+/* eslint-disable @typescript-eslint/no-explicit-any */ 
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { env } from "../config/env";
@@ -12,9 +15,11 @@ export const pool = new Pool({
   max: env.PG_POOL_MAX,
 });
 
-pool.on("error", (err) => {
-  logger.error({ err }, "Unexpected pool error");
-});
+if (typeof pool.on === "function") {
+  pool.on("error", (err) => {
+    logger.error({ err }, "Unexpected pool error");
+  });
+}
 
 export const db = drizzle(pool, { schema });
 

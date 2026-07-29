@@ -4,8 +4,14 @@ import { requireAuth } from "../middleware/requireAuth";
 import { openDispute, DisputeError } from "../services/disputeService";
 import { validateHttpsUrl, validateSsrf } from "../utils/url";
 import { logger } from "../config/logger";
+import { RouteErrorFactory } from "../errors";
+import { compressResponse } from "../middleware/compression";
 
 export const disputesRouter = Router({ mergeParams: true });
+
+// Apply compression to all disputes responses — large payloads (≥ 1 KiB)
+// are gzip/deflate compressed based on the client's Accept-Encoding header.
+disputesRouter.use(compressResponse);
 
 const openDisputeSchema = z.object({
   reason: z.string().min(10).max(500),
@@ -14,23 +20,14 @@ const openDisputeSchema = z.object({
 
 disputesRouter.post("/", requireAuth, async (req, res, next) => {
   try {
-    // mergeParams: true means :id from the parent router is available here
     const marketId = (req.params as Record<string, string>).id;
     if (!marketId) {
-      res.status(400).json({ error: { code: "bad_request", message: "Market ID is required" } });
-      return;
+      throw RouteErrorFactory.badRequest("Market ID is required");
     }
 
     const parsed = openDisputeSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({
-        error: {
-          code: "validation_error",
-          message: "Invalid request body",
-          details: parsed.error.flatten().fieldErrors,
-        },
-      });
-      return;
+      throw RouteErrorFactory.validation("Invalid request body", parsed.error.flatten().fieldErrors as Record<string, string[]>);
     }
 
     const { reason, evidenceUri } = parsed.data;
@@ -38,19 +35,16 @@ disputesRouter.post("/", requireAuth, async (req, res, next) => {
     if (evidenceUri) {
       const urlResult = validateHttpsUrl(evidenceUri);
       if (!urlResult.valid) {
-        res.status(400).json({ error: { code: "invalid_evidence_uri", message: urlResult.error } });
-        return;
+        throw RouteErrorFactory.badRequest(urlResult.error ?? "Invalid evidence URI");
       }
 
       const ssrfResult = await validateSsrf(evidenceUri);
       if (!ssrfResult.valid) {
         logger.warn({ evidenceUri, error: ssrfResult.error }, "SSRF check failed for evidenceUri");
-        res.status(400).json({ error: { code: "ssrf_check_failed", message: ssrfResult.error } });
-        return;
+        throw RouteErrorFactory.badRequest(ssrfResult.error ?? "SSRF check failed");
       }
     }
 
-    // req.user is guaranteed by requireAuth middleware
     const userId = (req as unknown as { user: { id: string } }).user.id;
 
     const dispute = await openDispute({
@@ -63,7 +57,7 @@ disputesRouter.post("/", requireAuth, async (req, res, next) => {
     res.status(201).json({ data: dispute });
   } catch (e) {
     if (e instanceof DisputeError) {
-      res.status(e.status).json({ error: { code: e.code, message: e.message } });
+      res.status(e.status).json({ error: { type: e.code, message: e.message } });
       return;
     }
     next(e);

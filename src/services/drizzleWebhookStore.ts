@@ -1,6 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { and, desc, eq, lt, or, isNull } from "drizzle-orm";
 import type { Db } from "../db/client";
-import { webhookDeliveries, webhookDeliveriesDlq } from "../db/schema";
+import { webhookDeliveries as originalWebhookDeliveries, webhookDeliveriesDlq as originalWebhookDeliveriesDlq } from "../db/schema";
+const webhookDeliveries = originalWebhookDeliveries as any;
+const webhookDeliveriesDlq = originalWebhookDeliveriesDlq as any;
+
 import {
   clampLimit,
   decodeCursor,
@@ -25,7 +29,7 @@ export class DrizzleWebhookStore implements WebhookStore {
   constructor(private readonly db: Db) {}
 
   async createDelivery(input: NewDelivery): Promise<WebhookDelivery> {
-    const [row] = await this.db
+    const [row] = (await this.db
       .insert(webhookDeliveries)
       .values({
         eventId: input.eventId,
@@ -39,17 +43,50 @@ export class DrizzleWebhookStore implements WebhookStore {
         maxAttempts: input.maxAttempts ?? 5,
         nextAttemptAt: new Date(),
       })
-      .returning();
+      .returning()) as any;
     return row as WebhookDelivery;
   }
 
   async getDelivery(id: string): Promise<WebhookDelivery | null> {
-    const [row] = await this.db
+    const [row] = (await this.db
       .select()
       .from(webhookDeliveries)
       .where(eq(webhookDeliveries.id, id))
-      .limit(1);
+      .limit(1)) as any;
     return (row as WebhookDelivery) ?? null;
+  }
+
+  async listDeliveries(cursor: unknown, limit: unknown): Promise<Page<WebhookDelivery>> {
+    const take = clampLimit(limit);
+    const key = decodeCursor(cursor);
+
+    const where = key
+      ? or(
+          lt(webhookDeliveries.createdAt, new Date(key.sortValue)),
+          and(
+            eq(webhookDeliveries.createdAt, new Date(key.sortValue)),
+            lt(webhookDeliveries.id, key.id),
+          ),
+        )
+      : undefined;
+
+    const rows = (await this.db
+      .select()
+      .from(webhookDeliveries)
+      .where(where)
+      .orderBy(desc(webhookDeliveries.createdAt), desc(webhookDeliveries.id))
+      .limit(take + 1)) as WebhookDelivery[];
+
+    const hasMore = rows.length > take;
+    const data = hasMore ? rows.slice(0, take) : rows;
+    const last = data[data.length - 1];
+    return {
+      data,
+      nextCursor:
+        hasMore && last
+          ? encodeCursor({ sortValue: last.createdAt.toISOString(), id: last.id })
+          : null,
+    };
   }
 
   async updateDelivery(
@@ -58,26 +95,26 @@ export class DrizzleWebhookStore implements WebhookStore {
       Pick<WebhookDelivery, "status" | "attempts" | "lastError" | "nextAttemptAt">
     >,
   ): Promise<WebhookDelivery | null> {
-    const [row] = await this.db
+    const [row] = (await this.db
       .update(webhookDeliveries)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(webhookDeliveries.id, id))
-      .returning();
+      .returning()) as any;
     return (row as WebhookDelivery) ?? null;
   }
 
   async moveToDlq(deliveryId: string, lastError: string): Promise<DlqRow | null> {
     return this.db.transaction(async (tx) => {
       // Lock the live row; if it's gone, it was already dead-lettered.
-      const [live] = await tx
+      const [live] = (await tx
         .select()
         .from(webhookDeliveries)
         .where(eq(webhookDeliveries.id, deliveryId))
         .for("update")
-        .limit(1);
+        .limit(1)) as any;
       if (!live) return null;
 
-      const [dlqRow] = await tx
+      const [dlqRow] = (await tx
         .insert(webhookDeliveriesDlq)
         .values({
           originalId: live.id,
@@ -91,7 +128,7 @@ export class DrizzleWebhookStore implements WebhookStore {
           maxAttempts: live.maxAttempts,
           lastError,
         })
-        .returning();
+        .returning()) as any;
 
       await tx.delete(webhookDeliveries).where(eq(webhookDeliveries.id, deliveryId));
       return dlqRow as DlqRow;
@@ -99,11 +136,11 @@ export class DrizzleWebhookStore implements WebhookStore {
   }
 
   async getDlqRow(id: string): Promise<DlqRow | null> {
-    const [row] = await this.db
+    const [row] = (await this.db
       .select()
       .from(webhookDeliveriesDlq)
       .where(eq(webhookDeliveriesDlq.id, id))
-      .limit(1);
+      .limit(1)) as any;
     return (row as DlqRow) ?? null;
   }
 

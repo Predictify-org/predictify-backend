@@ -26,6 +26,12 @@ export interface RequestContext {
    * Populated after fingerprintMiddleware runs; undefined until then.
    */
   fingerprint?: string;
+  /**
+   * Resolved X-Correlation-Id for this request.
+   * Populated by `correlationMiddleware` after it runs; undefined until then.
+   * Prefer reading via `getCorrelationId()` from `src/middleware/correlation`.
+   */
+  correlationId?: string;
 }
 
 /**

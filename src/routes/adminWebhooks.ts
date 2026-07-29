@@ -1,23 +1,24 @@
 import { Router } from "express";
+import { logger } from "../config/logger";
+import { getRequestId } from "../lib/requestContext";
 import { requireAdmin } from "../middleware/requireAdmin";
-import type { WebhookDispatcher } from "../services/webhookDispatcher";
+import { webhooksMetricsMiddleware } from "../metrics/webhooksMetrics";
+import type { IWebhookDispatcher } from "../services/webhookDispatcher";
 import type { DlqRow, WebhookStore } from "../services/webhookStore";
+import { RouteErrorFactory } from "../errors";
+import { dlqQuerySchema, dlqReplayParamsSchema } from "../validators/webhooks";
 
-/**
- * Admin-only webhook dead-letter routes.
- *
- *   GET  /api/admin/webhooks/dlq            -> paginated DLQ listing
- *   POST /api/admin/webhooks/dlq/:id/replay -> re-enqueue a dead-lettered delivery
- *
- * Every route is guarded by `requireAdmin` (401 unauthenticated, 403 non-admin).
- * Built as a factory so the store and dispatcher can be injected in tests.
- */
 export interface AdminWebhookDeps {
   store: WebhookStore;
-  dispatcher: WebhookDispatcher;
+  dispatcher: IWebhookDispatcher;
 }
 
-/** Shape the DLQ row for the API: payload bytes are exposed as base64, never raw. */
+interface ReplayResult {
+  id: string;
+  status: string;
+  attempts: number;
+}
+
 function serializeDlqRow(row: DlqRow) {
   return {
     id: row.id,
@@ -37,57 +38,112 @@ function serializeDlqRow(row: DlqRow) {
   };
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 export function createAdminWebhooksRouter(deps: AdminWebhookDeps): Router {
   const router = Router();
+  router.use(webhooksMetricsMiddleware);
   router.use(requireAdmin);
 
-  // GET /api/admin/webhooks/dlq?cursor=<opaque>&limit=<n>
   router.get("/dlq", async (req, res, next) => {
+    const requestId = getRequestId();
+
     try {
-      const page = await deps.store.listDlq(req.query.cursor, req.query.limit);
+      const parseResult = dlqQuerySchema.safeParse(req.query);
+      if (!parseResult.success) {
+        const issue = parseResult.error.issues[0];
+        logger.warn(
+          {
+            event: "dlq_list_validation_failed",
+            requestId,
+            adminAddress: req.adminAddress,
+            issues: parseResult.error.issues,
+          },
+          "DLQ list: invalid query parameters",
+        );
+        res.status(400).json({
+          error: {
+            code: "validation_error",
+            message: issue?.message ?? "invalid query parameters",
+            requestId,
+          },
+        });
+        return;
+      }
+
+      const { cursor, limit } = parseResult.data;
+      const page = await deps.store.listDlq(cursor, limit);
       return res.json({
         data: page.data.map(serializeDlqRow),
         nextCursor: page.nextCursor,
       });
     } catch (e) {
+      logger.error(
+        {
+          event: "dlq_list_error",
+          requestId,
+          adminAddress: req.adminAddress,
+          error: e instanceof Error ? e.message : String(e),
+        },
+        "DLQ list encountered an unexpected error",
+      );
       return next(e);
     }
   });
 
-  // POST /api/admin/webhooks/dlq/:id/replay
   router.post("/dlq/:id/replay", async (req, res, next) => {
+    const requestId = getRequestId();
+
     try {
-      const { id } = req.params;
-      if (!UUID_RE.test(id)) {
-        return res.status(400).json({ error: { code: "invalid_id" } });
+      const parseResult = dlqReplayParamsSchema.safeParse(req.params);
+      if (!parseResult.success) {
+        const issue = parseResult.error.issues[0];
+        logger.warn(
+          {
+            event: "dlq_replay_validation_failed",
+            requestId,
+            adminAddress: req.adminAddress,
+            issues: parseResult.error.issues,
+          },
+          "DLQ replay: invalid parameters",
+        );
+        throw RouteErrorFactory.badRequest(
+          issue?.message ?? "invalid parameters",
+        );
       }
 
+      const { id } = parseResult.data;
       const row = await deps.store.getDlqRow(id);
       if (!row) {
-        return res.status(404).json({ error: { code: "not_found" } });
+        throw RouteErrorFactory.notFound("DLQ row not found");
       }
       if (row.replayedAt) {
-        // Already replayed — surface the existing fresh delivery, don't dup.
         return res.status(409).json({
-          error: { code: "already_replayed" },
+          error: { type: "already_replayed" },
           replayDeliveryId: row.replayDeliveryId,
         });
       }
 
-      const fresh = await deps.dispatcher.replayFromDlq(row);
+      const fresh = (await deps.dispatcher.replayFromDlq(row)) as ReplayResult | null;
       if (!fresh) {
-        // Lost the idempotency race between the check above and the write.
-        return res.status(409).json({ error: { code: "already_replayed" } });
+        return res.status(409).json({ error: { type: "already_replayed" } });
       }
 
-      // 202 Accepted: the fresh delivery is queued, not yet delivered.
       return res.status(202).json({
-        data: { deliveryId: fresh.id, status: fresh.status, attempts: fresh.attempts },
+        data: {
+          deliveryId: fresh.id,
+          status: fresh.status,
+          attempts: fresh.attempts,
+        },
       });
     } catch (e) {
+      logger.error(
+        {
+          event: "dlq_replay_error",
+          requestId,
+          adminAddress: req.adminAddress,
+          error: e instanceof Error ? e.message : String(e),
+        },
+        "DLQ replay encountered an unexpected error",
+      );
       return next(e);
     }
   });

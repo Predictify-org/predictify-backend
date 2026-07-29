@@ -1,7 +1,23 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { eq, sql } from "drizzle-orm";
 import type { Database } from "./client";
 import { contractEvents, indexerCursor } from "./schema";
-import type { CursorStore, IndexedEvent } from "../services/indexerService";
+
+export interface IndexedEvent {
+  id: string;
+  ledger: number;
+  contractId: string;
+  type: string;
+  txHash: string;
+  ledgerClosedAt: number;
+  topic: string;
+  value: unknown;
+}
+
+export interface CursorStore {
+  loadLedger(): Promise<number | null>;
+  commit(events: IndexedEvent[], newLedger: number): Promise<void>;
+}
 
 // The cursor table holds a single row identified by this id.
 const CURSOR_ID = 1;
@@ -23,7 +39,7 @@ export function createDbCursorStore(db: Database): CursorStore {
     },
 
     async commit(events: IndexedEvent[], newLedger: number): Promise<void> {
-      await db.transaction(async (tx) => {
+      await db.transaction(async (tx: any) => {
         if (events.length > 0) {
           await tx
             .insert(contractEvents)

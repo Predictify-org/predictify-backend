@@ -22,6 +22,7 @@ dead-letter table that an operator can inspect and replay.
 | Auth | `src/middleware/requireAdmin.ts` | JWT admin guard (401 / 403) |
 | Pagination | `src/utils/cursor.ts` | Shared keyset cursor helper |
 | Routes | `src/routes/adminWebhooks.ts` | `GET /dlq`, `POST /dlq/:id/replay` |
+| **DLQ list (dedicated)** | **`src/routes/admin/webhooks/dlq.ts`** | **`GET /api/admin/webhooks/dlq` — focused route with Zod validation, structured logging, rate limiting** |
 | Wiring | `src/index.ts` | Mounts admin router; injectable deps for tests |
 
 ## Data model
@@ -48,7 +49,132 @@ byte-identical and validly signed.
 
 All routes require a Bearer JWT whose `role` claim is `admin`.
 
-### `GET /api/admin/webhooks/dlq`
+### `GET /api/webhooks`
+
+Returns live webhook deliveries newest first. Pagination is cursor based over
+`createdAt DESC, id DESC`, so paging remains stable while new deliveries are
+created between requests.
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `limit` | integer string | `20` | Items per page. Clamped to `[1, 100]`. Non-numeric values return `400`. |
+| `cursor` | string | _(none)_ | Opaque page token from a previous response. Empty string returns `400`. |
+
+#### Response `200`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "eventId": "evt_abc123",
+      "eventType": "market.resolved",
+      "targetUrl": "https://subscriber.example/hook",
+      "payloadBase64": "c2lnbmVkLWJvZHk=",
+      "signature": "sha256=abc...",
+      "headers": null,
+      "status": "pending",
+      "attempts": 0,
+      "maxAttempts": 5,
+      "lastError": null,
+      "nextAttemptAt": "2026-07-25T01:00:00.000Z",
+      "createdAt": "2026-07-25T01:00:00.000Z",
+      "updatedAt": "2026-07-25T01:00:00.000Z"
+    }
+  ],
+  "nextCursor": "eyJ..."
+}
+```
+
+Invalid query parameters return `{ "error": { "code": "validation_error",
+"message": "...", "requestId": "..." } }`.
+
+### `GET /api/admin/webhooks/dlq` (dedicated list endpoint)
+
+**File:** `src/routes/admin/webhooks/dlq.ts`
+
+Returns a paginated, newest-first list of dead-lettered deliveries for operator
+review. This is the primary endpoint for browsing the DLQ — it adds Zod input
+validation, structured pino logging with correlation IDs, and per-token rate
+limiting on top of the base store query.
+
+**Auth:** `Authorization: Bearer <jwt>` with `{ role: "admin" }`  
+**Rate limit:** 60 requests per minute per admin token
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `limit` | integer string | `20` | Items per page. Clamped to `[1, 100]`. Non-numeric values return `400`. |
+| `cursor` | string | _(none)_ | Opaque page token from a previous response. Empty string returns `400`. |
+
+#### Response `200`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "originalId": "uuid",
+      "eventId": "evt_abc123",
+      "eventType": "market.resolved",
+      "targetUrl": "https://subscriber.example/hook",
+      "payloadBase64": "eyJtYXJrZXQiOiJtMSJ9",
+      "signature": "sha256=abc…",
+      "headers": null,
+      "attempts": 5,
+      "maxAttempts": 5,
+      "lastError": "non-2xx response: 503",
+      "failedAt": "2026-07-23T17:00:00.000Z",
+      "replayedAt": null,
+      "replayDeliveryId": null
+    }
+  ],
+  "nextCursor": "eyJ2MSI6Ijx…"
+}
+```
+
+`nextCursor` is `null` on the last page. Pass it as `?cursor=` on the next
+request. Pagination is keyset-based (`ORDER BY failed_at DESC, id DESC`), so
+results stay stable while the DLQ is being actively written to or drained.
+
+`payloadBase64` is the original signed request body, base64-encoded. Decode it to
+recover the exact bytes that were (or will be) sent to the subscriber.
+
+#### Error responses
+
+| Status | `error.code` | Cause |
+| --- | --- | --- |
+| `400` | `validation_error` | Non-numeric `limit` or empty `cursor` |
+| `403` | `forbidden` | Missing, invalid, or non-admin JWT |
+| `429` | `rate_limit_exceeded` | 60 req/min per token exceeded |
+| `500` | _(propagated)_ | Unexpected store error |
+
+#### Structured log events emitted
+
+| Event | Level | Fired when |
+| --- | --- | --- |
+| `dlq_list_requested` | `info` | Valid request received, before store query |
+| `dlq_list_returned` | `info` | Response ready, includes `count` + `hasNextPage` |
+| `dlq_list_validation_failed` | `warn` | Zod validation rejected query params |
+| `dlq_list_error` | `error` | Unexpected store error |
+
+Every log entry includes `requestId` (from `AsyncLocalStorage`) and
+`adminAddress` (from the verified JWT subject).
+
+#### Example
+
+```bash
+# First page
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://api.example.com/api/admin/webhooks/dlq?limit=10"
+
+# Next page
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://api.example.com/api/admin/webhooks/dlq?limit=10&cursor=eyJ2MSI6..."
+```
 
 Query params: `limit` (1–100, default 20), `cursor` (opaque, from a previous
 response). Returns:
@@ -116,6 +242,14 @@ npm test                      # in-memory store; no Postgres required
 - `tests/adminWebhooks.test.ts` — end-to-end over HTTP: auth (401/403), cursor
   pagination across pages, and the full "failing target → DLQ → replay (202) →
   redelivery succeeds" flow, plus 404/400/409 edge cases.
+- `tests/adminDlq.test.ts` — **focused tests for the dedicated DLQ list endpoint**:
+  auth (403 for missing/bad/non-admin tokens), empty list, cursor pagination
+  (no overlap, last-page null cursor, newest-first order), limit clamping
+  (default 20, clamp to 100, clamp to 1), invalid query params (non-numeric
+  limit, empty cursor → 400), payload base64 round-trip, all response fields
+  present, structured log events (`dlq_list_requested`, `dlq_list_returned`,
+  `dlq_list_validation_failed`), route isolation (404 when deps not injected),
+  rate-limit headers. All 26 tests pass against `InMemoryWebhookStore`.
 
 Tests run against `InMemoryWebhookStore`, so no database is needed in CI. The
 `DrizzleWebhookStore` is a thin CRUD/transaction wrapper over the same interface;

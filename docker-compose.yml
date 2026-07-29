@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: predictify
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d predictify"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  migrate:
+    build: .
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/predictify
+    depends_on:
+      db:
+        condition: service_healthy
+    command: npm run db:migrate
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/predictify
+      - NODE_ENV=production
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  indexer:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/predictify
+      - NODE_ENV=production
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Assuming standard indexer start; adjust if indexer has a specific entry point file
+    command: npm run indexer:gap-scan
+
+volumes:
+  postgres_data:

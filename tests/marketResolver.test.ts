@@ -12,6 +12,31 @@
  *  3. MarketResolverWorker — worker unit tests via injected repo + emitter
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+let workerCallback: any = null;
+
+jest.mock("ioredis", () => {
+  return jest.fn().mockImplementation(() => ({
+    on: jest.fn(),
+  }));
+});
+jest.mock("bullmq", () => {
+  return {
+    Queue: jest.fn().mockImplementation((name) => ({
+      name,
+      add: jest.fn().mockResolvedValue({}),
+    })),
+    Worker: jest.fn().mockImplementation((_name, cb) => {
+      workerCallback = cb;
+      return {
+        on: jest.fn(),
+        close: jest.fn(),
+      };
+    }),
+    QueueEvents: jest.fn(),
+  };
+});
+
 import {
   resolveMarket,
   type MarketResolvedEvent,
@@ -324,35 +349,65 @@ describe("resolveMarket() — in-memory fixture tests (end-to-end logic)", () =>
 
 // ─── 3. MarketResolverWorker — worker unit tests ─────────────────────────────
 
+import { marketResolutionQueue } from "../src/queue";
+import { Worker } from "bullmq";
+
 describe("MarketResolverWorker", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   function makeWorker(repoOverrides?: Partial<MarketResolutionRepo>): MarketResolverWorker {
     return new MarketResolverWorker(makeRepo(repoOverrides), makeEmitter());
   }
 
-  it("resolves without throwing when the service processes the event", async () => {
+  it("handleEvent enqueues the event to marketResolutionQueue", async () => {
     const worker = makeWorker();
-    await expect(worker.handleEvent(FIXTURE_EVENT)).resolves.toBeUndefined();
+    await worker.handleEvent(FIXTURE_EVENT);
+    expect(marketResolutionQueue.add).toHaveBeenCalledTimes(1);
+    expect(marketResolutionQueue.add).toHaveBeenCalledWith("resolve", FIXTURE_EVENT);
   });
 
-  it("resolves without throwing when the event is a no-op (market already resolved)", async () => {
-    const worker = makeWorker({ atomicResolve: jest.fn(async () => false) });
-    await expect(worker.handleEvent(FIXTURE_EVENT)).resolves.toBeUndefined();
+  it("can start and stop the worker", async () => {
+    const worker = makeWorker();
+    worker.start();
+    expect(Worker).toHaveBeenCalledTimes(1);
+    expect(Worker).toHaveBeenCalledWith(
+      "market-resolution",
+      expect.any(Function),
+      expect.objectContaining({ concurrency: 5 }),
+    );
+
+    await worker.stop();
+    const workerInstance = (Worker as unknown as jest.Mock).mock.results[0].value;
+    expect(workerInstance.close).toHaveBeenCalledTimes(1);
   });
 
-  it("propagates errors thrown by the repository so the indexer can retry", async () => {
-    const worker = makeWorker({
-      atomicResolve: jest.fn(async () => {
-        throw new Error("DB connection lost");
-      }),
-    });
-    await expect(worker.handleEvent(FIXTURE_EVENT)).rejects.toThrow("DB connection lost");
-  });
-
-  it("calls atomicResolve with the marketId and winningOutcome from the event", async () => {
+  it("worker processor calls resolveMarket", async () => {
     const atomicResolve = jest.fn(async () => true);
     const worker = makeWorker({ atomicResolve });
+    worker.start();
 
-    await worker.handleEvent(FIXTURE_EVENT);
+    expect(workerCallback).toBeDefined();
+    await expect(
+      workerCallback({ id: "job-1", data: FIXTURE_EVENT })
+    ).resolves.toBeUndefined();
+
+    expect(atomicResolve).toHaveBeenCalledWith(
+      FIXTURE_EVENT.marketId,
+      FIXTURE_EVENT.winningOutcome,
+    );
+  });
+
+  it("worker processor handles re-entry and skipped status", async () => {
+    const atomicResolve = jest.fn(async () => false);
+    const worker = makeWorker({ atomicResolve });
+    worker.start();
+
+    expect(workerCallback).toBeDefined();
+    await expect(
+      workerCallback({ id: "job-2", data: FIXTURE_EVENT })
+    ).resolves.toBeUndefined();
 
     expect(atomicResolve).toHaveBeenCalledWith(
       FIXTURE_EVENT.marketId,

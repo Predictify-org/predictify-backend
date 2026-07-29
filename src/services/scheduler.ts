@@ -1,6 +1,6 @@
 import { env } from "../config/env";
 import { logger } from "../config/logger";
-import { performReconciliation } from "./reconciliationService";
+import { reconciliationQueue } from "../queue";
 
 /**
  * Simple cron-like scheduler for running periodic tasks
@@ -115,7 +115,8 @@ export function initializeScheduler(): void {
     "reconciliation",
     env.RECONCILIATION_SCHEDULE,
     async () => {
-      await performReconciliation();
+      logger.info("Scheduling global reconciliation job via BullMQ");
+      await reconciliationQueue.add("reconciliation-job", { type: "global" });
     }
   );
 

@@ -1,0 +1,61 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`GET /api/rate-limit — admin listing snapshot should maintain a stable forbidden error shape when unauthenticated 1`] = `
+{
+  "error": {
+    "code": "forbidden",
+  },
+}
+`;
+
+exports[`GET /api/rate-limit — admin listing snapshot should maintain a stable response shape for a successful paginated response 1`] = `
+{
+  "data": [
+    {
+      "action": "rate_limit.blocked",
+      "correlationId": "corr-1",
+      "createdAt": "2026-07-28T10:00:00.000Z",
+      "id": "log-1",
+      "ip": "192.168.1.1",
+      "rateLimitContext": null,
+      "walletAddress": "GAHK7EYR7AQ5B56K2RRYUWWC7EJ5CWWWURC2Q4GQRHBDQY7ZLMQVB6TF",
+    },
+  ],
+  "nextCursor": "eyJzb3J0VmFsdWUiOiIyMDI2LTA3LTI4VDEwOjAwOjAwLjAwMFoifQ==",
+}
+`;
+
+exports[`GET /api/rate-limit — admin listing snapshot should maintain a stable validation error shape 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "message": "limit must be a positive integer",
+    "requestId": "test-req-id",
+  },
+}
+`;
+
+exports[`GET /api/rate-limit/status — public status snapshot should maintain a stable anonymous status shape with zero usage 1`] = `
+{
+  "data": {
+    "clientIp": "127.0.0.1",
+    "limit": 60,
+    "remaining": 60,
+    "resetAt": Any<String>,
+    "type": "anonymous",
+    "used": 0,
+    "windowMs": 60000,
+  },
+}
+`;
+
+exports[`GET /api/rate-limit/status — public status snapshot should maintain a stable authenticated status shape 1`] = `
+{
+  "data": {
+    "bypasses": true,
+    "limit": 60,
+    "type": "authenticated",
+    "windowMs": 60000,
+  },
+}
+`;

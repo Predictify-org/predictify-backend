@@ -35,6 +35,10 @@ export enum LogEvent {
   MARKET_CLOSED = "market.closed",
   /** Market was archived / hidden from listings. */
   MARKET_ARCHIVED = "market.archived",
+  /** Market was featured on the home page by an admin. */
+  MARKET_FEATURED = "market.featured",
+  /** Market was unfeatured from the home page by an admin. */
+  MARKET_UNFEATURED = "market.unfeatured",
 }
 
 /**

@@ -54,3 +54,7 @@ Each successful mutation emits:
 
 The audit log includes the acting wallet address, request correlation ID, and
 client IP.
+
+### `GET /api/users/:addr/portfolio`
+
+Returns a cached aggregate portfolio for a Stellar wallet across all markets. The response includes total markets, predictions, staked amount, pending claimable amount, status counts, and per-market aggregates. Invalid Stellar addresses return `400 invalid_address`; unknown users return `404 not_found`.

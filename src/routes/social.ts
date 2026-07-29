@@ -1,9 +1,7 @@
 import {
   Router,
-  type NextFunction,
   type Request,
   type RequestHandler,
-  type Response,
 } from "express";
 import { z } from "zod";
 import { logger } from "../config/logger";
@@ -14,6 +12,7 @@ import {
   type SocialRepository,
 } from "../repositories/socialRepository";
 import { createAuditLog } from "../services/auditService";
+import { RouteErrorFactory } from "../errors";
 
 const stellarAddressSchema = z
   .string()
@@ -74,21 +73,14 @@ export function createSocialRouter({
   router.post(
     "/:addr/follow",
     authMiddleware,
-    async (req: Request, res: Response, next: NextFunction) => {
+    async (req, res, next) => {
       const parsed = stellarAddressSchema.safeParse(req.params.addr);
       if (!parsed.success) {
-        res.status(400).json({
-          error: {
-            code: "validation_error",
-            details: parsed.error.issues,
-          },
-        });
-        return;
+        throw RouteErrorFactory.validation("Invalid Stellar address");
       }
 
       if (!req.user?.stellarAddress) {
-        res.status(401).json({ error: { code: "unauthenticated" } });
-        return;
+        throw RouteErrorFactory.unauthorized("Authentication required");
       }
 
       try {
@@ -112,21 +104,14 @@ export function createSocialRouter({
   router.delete(
     "/:addr/follow",
     authMiddleware,
-    async (req: Request, res: Response, next: NextFunction) => {
+    async (req, res, next) => {
       const parsed = stellarAddressSchema.safeParse(req.params.addr);
       if (!parsed.success) {
-        res.status(400).json({
-          error: {
-            code: "validation_error",
-            details: parsed.error.issues,
-          },
-        });
-        return;
+        throw RouteErrorFactory.validation("Invalid Stellar address");
       }
 
       if (!req.user?.stellarAddress) {
-        res.status(401).json({ error: { code: "unauthenticated" } });
-        return;
+        throw RouteErrorFactory.unauthorized("Authentication required");
       }
 
       try {

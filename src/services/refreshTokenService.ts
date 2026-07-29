@@ -2,10 +2,9 @@ import { db } from "../db/index";
 import { refreshTokens, users } from "../db/schema";
 import { eq, and, isNull } from "drizzle-orm";
 import crypto from "crypto";
-import jwt from "jsonwebtoken";
-import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { Result, ok, err } from "../errors/RouteError";
+import { signAccessToken } from "./jwtService";
 
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const REFRESH_TOKEN_ERROR_MESSAGES = {
@@ -35,15 +34,7 @@ export function hashToken(token: string): string {
 }
 
 export function generateAccessToken(userId: string, stellarAddress: string): string {
-  return jwt.sign(
-    { sub: userId, stellarAddress },
-    env.JWT_SECRET,
-    {
-      expiresIn: env.JWT_TTL_SECONDS,
-      issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
-    }
-  );
+  return signAccessToken({ sub: userId, stellarAddress });
 }
 
 async function findRefreshTokenByRawToken(rawToken: string): Promise<RefreshTokenRecord | null> {

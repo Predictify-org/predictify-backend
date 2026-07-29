@@ -2,14 +2,16 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAdmin } from "../../middleware/requireAdmin";
 import { reconcileMarket } from "../../services/reconciliationService";
-import { REQUEST_ID_HEADER } from "../../lib/http";
+import { CORRELATION_ID_HEADER } from "../../lib/http";
+import { getCorrelationId } from "../../middleware/correlation";
+import { RouteErrorFactory } from "../../errors";
 
 const paramsSchema = z.object({
   id: z.string().trim().min(1).max(255),
 });
 
 function requestIdOf(req: { id?: unknown }): string {
-  return typeof req.id === "string" ? req.id : "";
+  return getCorrelationId() ?? (typeof req.id === "string" ? req.id : "") ?? "";
 }
 
 function requestIpOf(req: { ip?: unknown }): string {
@@ -24,27 +26,21 @@ export function createAdminReconciliationRouter(): Router {
   router.get("/markets/:id", async (req, res, next) => {
     try {
       const parsed = paramsSchema.safeParse(req.params);
-      const requestId = requestIdOf({ id: (req as { id?: unknown }).id });
+      const correlationId = requestIdOf({ id: (req as { id?: unknown }).id });
 
       if (!parsed.success) {
-        return res.status(400).json({
-          error: {
-            code: "validation_error",
-            details: parsed.error.issues,
-            requestId,
-          },
-        });
+        throw RouteErrorFactory.validation("Invalid market ID");
       }
 
       const result = await reconcileMarket({
         marketId: parsed.data.id,
         adminAddress: req.adminAddress!,
         ip: requestIpOf({ ip: req.ip }),
-        correlationId: requestId,
+        correlationId,
       });
 
-      res.setHeader(REQUEST_ID_HEADER, requestId);
-      return res.json({ data: result });
+      res.setHeader(CORRELATION_ID_HEADER, correlationId);
+      return res.json({ data: result, correlationId });
     } catch (error) {
       return next(error);
     }

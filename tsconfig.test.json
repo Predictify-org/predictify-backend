@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Test files live outside src/ so we broaden rootDir and include
+    // them directly.  Tests are never compiled to dist — ts-jest handles
+    // transpilation in-process only.
+    "rootDir": ".",
+    // Relax the "no unused variable" rules that are appropriate for
+    // production code but create noise in mock/stub parameters in tests.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}

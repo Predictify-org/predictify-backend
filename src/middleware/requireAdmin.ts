@@ -2,20 +2,22 @@
  * requireAdmin — Express middleware that enforces admin-only access.
  *
  * Expects:  Authorization: Bearer <jwt>
- * The JWT must be signed with JWT_SECRET and carry { role: "admin" }.
- * The verified subject (Stellar address) is attached as req.adminAddress
- * for downstream use in audit logging and rate-limit keying.
+ * The JWT must be signed with a key from the key ring (src/utils/keyRing.ts)
+ * and carry { role: "admin" }. The verified subject (Stellar address) is
+ * attached as req.adminAddress for downstream use in audit logging and
+ * rate-limit keying.
  *
  * Returns 403 for any of: missing header, invalid signature, wrong role.
  * Never reveals why verification failed (prevents enumeration).
  */
 
 import type { NextFunction, Request, Response } from "express";
-import jwt from "jsonwebtoken";
-import { env } from "../config/env";
+import { verifyAccessToken } from "../services/jwtService";
+import { logger } from "../config/logger";
 
 // Augment Express Request so downstream handlers can read the admin identity
 // without casting.
+/* eslint-disable @typescript-eslint/no-namespace */
 declare global {
   namespace Express {
     interface Request {
@@ -23,6 +25,7 @@ declare global {
     }
   }
 }
+/* eslint-enable @typescript-eslint/no-namespace */
 
 interface AdminTokenPayload {
   sub?: string;
@@ -39,20 +42,20 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   const token = auth.slice(7);
 
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET, {
-      issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
-    }) as AdminTokenPayload;
+    const payload = verifyAccessToken(token) as AdminTokenPayload;
 
     if (payload.role !== "admin" || !payload.sub) {
+      logger.info({ tokenKid: undefined, role: payload.role, sub: payload.sub }, "requireAdmin_forbidden");
       res.status(403).json({ error: { code: "forbidden" } });
       return;
     }
 
     req.adminAddress = payload.sub;
+    logger.info({ adminAddress: req.adminAddress }, "requireAdmin_ok");
     next();
   } catch {
     // Covers expired, malformed, and wrong-key tokens
+    logger.info({ err: "verify_failed" }, "requireAdmin_verify_failed");
     res.status(403).json({ error: { code: "forbidden" } });
   }
 }

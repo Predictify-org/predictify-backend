@@ -5,15 +5,43 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1782556191646,
-      "tag": "0000_easy_black_bird",
+      "when": 1783026326282,
+      "tag": "0000_huge_red_shift",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1782594683208,
-      "tag": "0001_chubby_dexter_bennett",
+      "when": 1784894109864,
+      "tag": "0001_add_notifications_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785000000000,
+      "tag": "0002_add_quota_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785100000000,
+      "tag": "0003_add_market_watchers",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1753718153907,
+      "tag": "0025_users_filter_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785335000000,
+      "tag": "0026_add_predictions_confirmer",
       "breakpoints": true
     }
   ]

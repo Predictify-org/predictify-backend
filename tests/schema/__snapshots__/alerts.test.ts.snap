@@ -1,0 +1,15 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Alerts API Schema Stability should maintain a stable response shape for GET /api/alerts 1`] = `
+{
+  "alerts": [],
+  "unreadCount": 0,
+}
+`;
+
+exports[`Alerts API Schema Stability should respond with 200 even when x-correlation-id header is present 1`] = `
+{
+  "alerts": [],
+  "unreadCount": 0,
+}
+`;

@@ -1,6 +1,9 @@
+  
+  
+export { requireAuth } from "./requireAuth";
 import type { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
 import { env } from "../config/env";
+import { verifyAccessToken } from "../services/jwtService";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -18,10 +21,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     }
 
     const token = authHeader.split(" ")[1];
-    const payload = jwt.verify(token, env.JWT_SECRET, {
-      audience: env.JWT_AUDIENCE,
-      issuer: env.JWT_ISSUER,
-    }) as { sub: string };
+    const payload = verifyAccessToken(token) as { sub: string };
 
     const stellarAddress = payload.sub;
     if (!stellarAddress) {
@@ -36,7 +36,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
 
     req.user = { id: stellarAddress, stellarAddress };
     next();
-  } catch (err) {
+  } catch {
     res.status(401).json({ error: { code: "unauthorized" } });
   }
 }

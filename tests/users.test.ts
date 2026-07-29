@@ -1,8 +1,30 @@
 import request from "supertest";
 import { createApp } from "../src/index";
-import { db } from "../src/db/connection";
+import { db } from "../src/db";
 import { users, markets, predictions } from "../src/db/schema";
 import { eq } from "drizzle-orm";
+
+describe("GET /api/users/health", () => {
+  it("returns ok when the database probe succeeds", async () => {
+    const res = await request(createApp()).get("/api/users/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("ok");
+    expect(res.body.dependencies.database.status).toBe("ok");
+    expect(res.body.correlationId).toBeDefined();
+  });
+
+  it("returns down with a 503 when database probing fails", async () => {
+    jest.spyOn(require("../src/db/client").pool, "query").mockRejectedValueOnce(new Error("db unavailable"));
+
+    const res = await request(createApp()).get("/api/users/health");
+
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe("down");
+    expect(res.body.dependencies.database.status).toBe("down");
+    expect(res.body.dependencies.database.error).toContain("db unavailable");
+  });
+});
 
 describe("GET /api/users/:address/predictions", () => {
   const testAddress = "GBBD47UZQ5DXGX23UKMHLGG5TZPJJKISVQYER3SPRINGS57LVEDSTQCEO";

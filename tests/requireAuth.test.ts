@@ -28,7 +28,7 @@ const TEST_STELLAR = "GABC1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12";
 
 process.env.NODE_ENV = "test";
 process.env.PORT = "3001";
-process.env.LOG_LEVEL = "silent";
+process.env.LOG_LEVEL = "fatal";
 process.env.DATABASE_URL = "postgres://localhost/test";
 process.env.JWT_SECRET = TEST_SECRET;
 process.env.JWT_ISSUER = TEST_ISSUER;

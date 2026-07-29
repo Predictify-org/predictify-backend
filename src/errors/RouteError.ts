@@ -1,28 +1,14 @@
-/**
- * Discriminated union representing all typed errors that can occur in route handlers.
- * Services return Result<T, RouteError> instead of throwing.
- * Middleware translates each variant to the appropriate HTTP status and envelope.
- */
+import { getRequestId } from "../lib/requestContext";
+import { ErrorCodes } from "./codes";
 
-/**
- * Standard error response envelope sent to clients.
- * All client-facing error responses follow this shape.
- */
 export interface ErrorEnvelope {
-  /** Machine-readable error code matching the RouteError kind. */
   code: string;
-  /** Human-readable message safe to expose to clients. */
   message: string;
-  /** Correlation ID for log tracing. */
   correlationId: string;
-  /** Optional validation field errors (only for ValidationError). */
+  details?: Record<string, unknown>;
   fields?: Record<string, string[]>;
 }
 
-/**
- * Discriminated union of all possible handler errors.
- * Each variant uses 'kind' as the discriminant for exhaustive matching.
- */
 export type RouteError =
   | {
       kind: "NotFound";
@@ -59,10 +45,6 @@ export type RouteError =
       detail?: string;
     };
 
-/**
- * HTTP status code for each RouteError variant.
- * Exhaustively maps all discriminant values to status codes.
- */
 export const HTTP_STATUS: Record<RouteError["kind"], number> = {
   NotFound: 404,
   Unauthorized: 401,
@@ -73,47 +55,73 @@ export const HTTP_STATUS: Record<RouteError["kind"], number> = {
   BadRequest: 400,
 };
 
-/**
- * Result type for service functions.
- * Either a successful value (ok: true) or a typed error (ok: false).
- * Services return this instead of throwing.
- */
 export type Result<T> =
-  | {
-      ok: true;
-      value: T;
-    }
-  | {
-      ok: false;
-      error: RouteError;
-    };
+  | { ok: true; value: T }
+  | { ok: false; error: RouteError };
 
-/**
- * Construct an Ok result containing a successful value.
- * @param value The successful result value
- * @returns A Result in success state
- */
 export const ok = <T>(value: T): Result<T> => ({
   ok: true,
   value,
 });
 
-/**
- * Construct an Err result containing a typed error.
- * @param error The RouteError to wrap
- * @returns A Result in error state (return type is never to signal control flow stops)
- */
 export const err = (error: RouteError): Result<never> => ({
   ok: false,
   error,
 });
 
-/**
- * Type guard to detect if an unknown value is a RouteError.
- * Checks for the presence of the 'kind' discriminant.
- * @param e The value to check
- * @returns true if e is a RouteError, false otherwise
- */
 export function isRouteError(e: unknown): e is RouteError {
   return typeof e === "object" && e !== null && "kind" in e;
+}
+
+export const RouteErrorFactory = {
+  notFound(message: string, resource?: string): RouteError {
+    return { kind: "NotFound", message, resource };
+  },
+
+  unauthorized(message = "Authentication required"): RouteError {
+    return { kind: "Unauthorized", message };
+  },
+
+  forbidden(message: string, reason?: string): RouteError {
+    return { kind: "Forbidden", message, reason };
+  },
+
+  validation(message: string, fields?: Record<string, string[]>): RouteError {
+    return { kind: "ValidationError", message, fields };
+  },
+
+  conflict(message: string, resource?: string): RouteError {
+    return { kind: "Conflict", message, resource };
+  },
+
+  internal(message: string, cause?: unknown): RouteError {
+    return { kind: "InternalError", message, cause };
+  },
+
+  badRequest(message: string, detail?: string): RouteError {
+    return { kind: "BadRequest", message, detail };
+  },
+};
+
+const KIND_TO_CODE: Record<RouteError["kind"], string> = {
+  NotFound: ErrorCodes.NOT_FOUND,
+  Unauthorized: ErrorCodes.UNAUTHORIZED,
+  Forbidden: ErrorCodes.FORBIDDEN,
+  ValidationError: ErrorCodes.VALIDATION_ERROR,
+  Conflict: ErrorCodes.CONFLICT,
+  InternalError: ErrorCodes.INTERNAL_ERROR,
+  BadRequest: ErrorCodes.REQUEST_FAILED,
+};
+
+export function toErrorEnvelope(error: RouteError, correlationId?: string): ErrorEnvelope {
+  const cid = correlationId ?? getRequestId() ?? "unknown";
+  const envelope: ErrorEnvelope = {
+    code: KIND_TO_CODE[error.kind],
+    message: error.kind === "InternalError" ? "An unexpected error occurred" : error.message,
+    correlationId: cid,
+  };
+  if (error.kind === "ValidationError" && error.fields) {
+    envelope.fields = error.fields;
+  }
+  return envelope;
 }

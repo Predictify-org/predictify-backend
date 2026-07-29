@@ -11,15 +11,34 @@ jest.mock("bullmq", () => {
   };
 });
 
-import { redisConnection, webhookQueue, webhookQueueName } from "../src/queue";
+import {
+  redisConnection,
+  webhookQueue,
+  webhookQueueName,
+  backupVerificationQueue,
+  backupVerificationQueueName,
+  reconciliationQueue,
+  reconciliationQueueName,
+  marketResolutionQueue,
+  marketResolutionQueueName,
+} from "../src/queue";
 
 describe("Queue Setup", () => {
   it("exports a valid redis connection", () => {
     expect(redisConnection).toBeDefined();
   });
 
-  it("exports a valid webhookQueue", () => {
+  it("exports all required queues", () => {
     expect(webhookQueue).toBeDefined();
     expect(webhookQueue.name).toBe(webhookQueueName);
+
+    expect(backupVerificationQueue).toBeDefined();
+    expect(backupVerificationQueue.name).toBe(backupVerificationQueueName);
+
+    expect(reconciliationQueue).toBeDefined();
+    expect(reconciliationQueue.name).toBe(reconciliationQueueName);
+
+    expect(marketResolutionQueue).toBeDefined();
+    expect(marketResolutionQueue.name).toBe(marketResolutionQueueName);
   });
 });

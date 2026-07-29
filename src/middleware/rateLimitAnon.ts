@@ -161,9 +161,13 @@ export function createRateLimitAnon(options: RateLimitAnonOptions): RequestHandl
   };
 }
 
+/** Shared store instance used by the default limiter and the status endpoint. */
+export const anonRateLimitStore = new SlidingWindowStore();
+
 /** Production middleware wired from env defaults. */
 export const rateLimitAnon = createRateLimitAnon({
   windowMs: env.ANON_RATE_LIMIT_WINDOW_MS,
   max: env.ANON_RATE_LIMIT_MAX,
   trustProxy: env.TRUST_PROXY,
+  store: anonRateLimitStore,
 });

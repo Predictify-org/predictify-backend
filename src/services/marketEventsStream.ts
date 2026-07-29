@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { and, eq, gt } from "drizzle-orm";
 import { db } from "../db";
 import { indexerEvents, type IndexerEvent } from "../db/schema";
@@ -31,7 +32,7 @@ export function heartbeatComment(): string {
 
 export async function fetchNewEvents(
   marketId: string,
-  afterId: number,
+  afterId: any,
 ): Promise<IndexerEvent[]> {
   return db
     .select()
@@ -39,7 +40,7 @@ export async function fetchNewEvents(
     .where(
       and(
         eq(indexerEvents.marketId, marketId),
-        gt(indexerEvents.id, afterId),
+        gt(indexerEvents.id, afterId as any),
       ),
     )
     .orderBy(indexerEvents.id)
@@ -55,9 +56,9 @@ export function createSSEPump(
   onEvent: (chunk: string) => void,
   onHeartbeat: (chunk: string) => void,
   onError: (err: Error) => void,
-  lastEventId: number | null = null,
+  lastEventId: any = null,
 ): SSECleanup {
-  let lastId = lastEventId ?? 0;
+  let lastId: any = lastEventId ?? 0;
   let polling = true;
 
   const poll = async () => {

@@ -211,11 +211,11 @@ describe("fetchWithRequestId", () => {
 
     // Stub global fetch to inspect headers without making a real network call.
     const originalFetch = global.fetch;
-    global.fetch = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    global.fetch = jest.fn(async (_input: any, init?: any) => {
       const headers = new Headers(init?.headers);
       capturedHeader = headers.get(REQUEST_ID_HEADER);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }) as typeof fetch;
+    }) as any;
 
     await requestContextStorage.run({ requestId: id }, async () => {
       await fetchWithRequestId("https://example.com/rpc");
@@ -229,11 +229,11 @@ describe("fetchWithRequestId", () => {
     let capturedHeader: string | null = "sentinel";
 
     const originalFetch = global.fetch;
-    global.fetch = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    global.fetch = jest.fn(async (_input: any, init?: any) => {
       const headers = new Headers(init?.headers);
       capturedHeader = headers.get(REQUEST_ID_HEADER);
       return new Response(null, { status: 200 });
-    }) as typeof fetch;
+    }) as any;
 
     await fetchWithRequestId("https://example.com/rpc");
 
@@ -246,10 +246,10 @@ describe("fetchWithRequestId", () => {
     let capturedHeaders: Headers | null = null;
 
     const originalFetch = global.fetch;
-    global.fetch = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    global.fetch = jest.fn(async (_input: any, init?: any) => {
       capturedHeaders = new Headers(init?.headers);
       return new Response(null, { status: 200 });
-    }) as typeof fetch;
+    }) as any;
 
     await requestContextStorage.run({ requestId: id }, async () => {
       await fetchWithRequestId("https://example.com/rpc", {

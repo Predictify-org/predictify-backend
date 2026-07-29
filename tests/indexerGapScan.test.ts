@@ -13,6 +13,14 @@ import {
 import { scanOnce } from "../src/workers/indexerGapScan";
 import { indexerGapDetectedTotal, resetMetrics } from "../src/metrics/registry";
 
+async function getCounterValue(counter: any, labels: Record<string, string | number>): Promise<number> {
+  const metric = await counter.get();
+  const found = metric.values?.find((val: any) => {
+    return Object.entries(labels).every(([k, v]) => String(val.labels[k]) === String(v));
+  });
+  return found ? found.value : 0;
+}
+
 describe("groupConsecutiveLedgers", () => {
   it("groups consecutive ledgers into ranges", () => {
     expect(groupConsecutiveLedgers([102, 103, 105, 106, 107])).toEqual([
@@ -154,7 +162,7 @@ describe("scanOnce gap healing", () => {
 
     expect(result.gaps).toEqual([{ from: 102, to: 102 }]);
     expect(backfillCalls).toEqual([{ from: 102, to: 102 }]);
-    expect(indexerGapDetectedTotal.get({ from: 102, to: 102 })).toBe(1);
+    expect(await getCounterValue(indexerGapDetectedTotal, { from: 102, to: 102 })).toBe(1);
   });
 
   it("increments metric once per detected gap range", async () => {
@@ -170,7 +178,7 @@ describe("scanOnce gap healing", () => {
 
     await scanOnce(service);
 
-    expect(indexerGapDetectedTotal.get({ from: 105, to: 107 })).toBe(1);
-    expect(indexerGapDetectedTotal.get({ from: 109, to: 109 })).toBe(1);
+    expect(await getCounterValue(indexerGapDetectedTotal, { from: 105, to: 107 })).toBe(1);
+    expect(await getCounterValue(indexerGapDetectedTotal, { from: 109, to: 109 })).toBe(1);
   });
 });

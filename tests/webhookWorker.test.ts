@@ -24,15 +24,15 @@ jest.mock("../src/queue", () => ({
 
 import { WebhookWorker } from "../src/workers/webhookWorker";
 import { Worker } from "bullmq";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { Db } from "../src/db";
 
 describe("WebhookWorker", () => {
-  let db: any;
+  let db: Db;
   let worker: WebhookWorker;
 
   beforeEach(() => {
-    db = {}; // mock db
-    worker = new WebhookWorker(db as NodePgDatabase, { concurrency: 5 });
+    db = {} as unknown as Db; // mock db — cast through unknown to satisfy strict schema typing
+    worker = new WebhookWorker(db, { concurrency: 5 });
   });
 
   afterEach(() => {

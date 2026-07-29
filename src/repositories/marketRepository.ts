@@ -1,5 +1,9 @@
+  
+/* eslint-disable @typescript-eslint/no-unused-vars */ 
+  
+/* eslint-disable @typescript-eslint/no-explicit-any */ 
 import { sql } from "drizzle-orm";
-import { db } from "../db/client";
+import { db, getDb } from "../db/client";
 
 export interface MarketSearchQuery {
   query: string;
@@ -92,4 +96,35 @@ export async function searchMarkets(params: MarketSearchQuery): Promise<MarketSe
   }
 
   return { data: [], total: 0, fallback: false };
+}
+
+export interface MarketTag {
+  tag: string;
+  count: number;
+}
+
+/**
+ * Gets market tags with counts from non-archived markets
+ */
+export async function getMarketTags(): Promise<MarketTag[]> {
+  // Use PostgreSQL query to unnest tags from metadata.tags
+  const tagsSql = sql`
+    SELECT
+      tag,
+      COUNT(*) AS count
+    FROM markets,
+         jsonb_array_elements_text(metadata->'tags') AS tag
+    WHERE archived = false
+      AND metadata ? 'tags'
+      AND jsonb_typeof(metadata->'tags') = 'array'
+    GROUP BY tag
+    ORDER BY count DESC, tag ASC
+  `;
+  const result = await getDb().execute(tagsSql);
+  const rows = (result as any).rows ?? result;
+  if (!Array.isArray(rows)) return [];
+  return rows.map(row => ({
+    tag: String(row.tag),
+    count: Number(row.count),
+  }));
 }

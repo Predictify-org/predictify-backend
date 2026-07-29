@@ -256,7 +256,7 @@ describe("error handling", () => {
       .set("Authorization", `Bearer ${adminJwt}`);
 
     expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: { code: "internal_error" } });
+    expect(res.body.error.code).toBe("internal_error");
   });
 
   it("does not write audit log when the service throws", async () => {

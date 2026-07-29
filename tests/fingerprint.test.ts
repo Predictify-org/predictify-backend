@@ -35,6 +35,15 @@
  *   25. getFingerprint() returns the value from within a request handler
  *   26. getFingerprint() returns undefined outside a request context
  *   27. fingerprintMiddleware continues on internal error (best-effort)
+ *
+ *  /api/fingerprint route tests (HTTP via supertest):
+ *   28. GET /api/fingerprint returns 200 with fingerprint in body
+ *   29. Response body includes correlationId field
+ *   30. Response body includes method and path fields
+ *   31. X-Correlation-Id response header echoes/sets the correlation ID
+ *   32. Response body fingerprint matches X-Request-Fingerprint header
+ *   33. Providing X-Correlation-Id request header echoes it back
+ *   34. Identical requests to /api/fingerprint produce the same fingerprint
  */
 
 import request from "supertest";
@@ -365,7 +374,84 @@ describe("getFingerprint()", () => {
   });
 });
 
-// ── 27: Best-effort error handling ───────────────────────────────────────
+// ── 28–34: /api/fingerprint route tests ────────────────────────────────
+
+describe("GET /api/fingerprint", () => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  it("returns 200 with fingerprint in body", async () => {
+    const res = await request(createApp()).get("/api/fingerprint");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("fingerprint");
+    expect(res.body.fingerprint).toMatch(HEX64_RE);
+  });
+
+  it("includes correlationId in the response body", async () => {
+    const res = await request(createApp()).get("/api/fingerprint");
+    expect(res.body).toHaveProperty("correlationId");
+    expect(res.body.correlationId).toBeDefined();
+    expect(typeof res.body.correlationId).toBe("string");
+    expect(res.body.correlationId.length).toBeGreaterThan(0);
+  });
+
+  it("includes method and path in the response body", async () => {
+    const res = await request(createApp()).get("/api/fingerprint");
+    expect(res.body).toHaveProperty("method", "GET");
+    expect(res.body).toHaveProperty("path", "/api/fingerprint");
+    expect(res.body).toHaveProperty("computedAt");
+    expect(new Date(res.body.computedAt).getTime()).not.toBeNaN();
+  });
+
+  it("echoes X-Correlation-Id in the response header", async () => {
+    const res = await request(createApp()).get("/api/fingerprint");
+    expect(res.headers["x-correlation-id"]).toBeDefined();
+    expect(res.headers["x-correlation-id"]).toBe(res.body.correlationId);
+  });
+
+  it("response body fingerprint matches X-Request-Fingerprint header", async () => {
+    const res = await request(createApp()).get("/api/fingerprint");
+    expect(res.headers[FINGERPRINT_HEADER]).toBe(res.body.fingerprint);
+  });
+
+  it("echoes the supplied X-Correlation-Id request header", async () => {
+    const correlationId = "test-fingerprint-correlation-abc";
+    const res = await request(createApp())
+      .get("/api/fingerprint")
+      .set("x-correlation-id", correlationId);
+    expect(res.body.correlationId).toBe(correlationId);
+    expect(res.headers["x-correlation-id"]).toBe(correlationId);
+  });
+
+  it("identical requests produce the same fingerprint", async () => {
+    const app = createApp();
+    const [r1, r2] = await Promise.all([
+      request(app).get("/api/fingerprint"),
+      request(app).get("/api/fingerprint"),
+    ]);
+    expect(r1.body.fingerprint).toBe(r2.body.fingerprint);
+  });
+
+  it("enforces per-user token-bucket rate limit with 429 and Retry-After", async () => {
+    const app = createApp();
+    const limit = 60; // default FINGERPRINT_RATE_LIMIT_CAPACITY
+    const isolatedIp = "9.9.9.9";
+
+    // Exhaust the rate limit for this IP
+    for (let i = 0; i < limit; i++) {
+      await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    }
+
+    // The 61st request should be blocked
+    const res = await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBeDefined();
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("rate_limit_exceeded");
+  });
+});
+
+// ── 35: fingerprintMiddleware error handling ────────────────────────────
 
 describe("fingerprintMiddleware error handling", () => {
   it("calls next() and does not throw when an internal error occurs", () => {

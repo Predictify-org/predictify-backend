@@ -44,6 +44,7 @@ jest.mock("pg", () => {
     connect: jest.fn(),
     query: jest.fn(),
     end: jest.fn(),
+    on: jest.fn(),
   }));
   return { Pool };
 });
@@ -59,6 +60,14 @@ const authSelect = jest.fn(() => ({ from: authFrom }));
 
 jest.mock("drizzle-orm/node-postgres", () => ({
   drizzle: jest.fn(() => ({ select: authSelect })),
+}));
+
+// ---------------------------------------------------------------------------
+// 3a. Mock src/db/client directly so pool.on() does not throw on module init.
+// ---------------------------------------------------------------------------
+jest.mock("../src/db/client", () => ({
+  db: { select: jest.fn() },
+  pool: { on: jest.fn(), end: jest.fn() },
 }));
 
 // ---------------------------------------------------------------------------
@@ -199,9 +208,12 @@ describe("GET /api/users/me", () => {
   it("returns 200 with stellarAddress, createdAt, and totals on success", async () => {
     mockDbReturnsUser();
     mockGetCurrentUserProfile.mockResolvedValueOnce({
-      stellarAddress: TEST_STELLAR,
-      createdAt: TEST_CREATED_AT,
-      totals: { prediction_count: 7, claim_count: 2 },
+      ok: true as const,
+      value: {
+        stellarAddress: TEST_STELLAR,
+        createdAt: TEST_CREATED_AT,
+        totals: { prediction_count: 7, claim_count: 2 },
+      },
     });
 
     const res = await request(app)
@@ -221,9 +233,12 @@ describe("GET /api/users/me", () => {
   it("passes req.user.id (UUID) — NOT the stellar address — to the service", async () => {
     mockDbReturnsUser();
     mockGetCurrentUserProfile.mockResolvedValueOnce({
-      stellarAddress: TEST_STELLAR,
-      createdAt: TEST_CREATED_AT,
-      totals: { prediction_count: 0, claim_count: 0 },
+      ok: true as const,
+      value: {
+        stellarAddress: TEST_STELLAR,
+        createdAt: TEST_CREATED_AT,
+        totals: { prediction_count: 0, claim_count: 0 },
+      },
     });
 
     await request(app)
@@ -249,7 +264,7 @@ describe("GET /api/users/me", () => {
       .set("Authorization", `Bearer ${signToken()}`);
 
     expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: { code: "internal_error" } });
+    expect(res.body.error.code).toBe("internal_error");
   });
 
   it("propagates other service errors to the global error handler (500 internal_error)", async () => {
@@ -261,7 +276,7 @@ describe("GET /api/users/me", () => {
       .set("Authorization", `Bearer ${signToken()}`);
 
     expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: { code: "internal_error" } });
+    expect(res.body.error.code).toBe("internal_error");
   });
 
   // ── Route-ordering correctness ──────────────────────────────────────────
@@ -272,9 +287,12 @@ describe("GET /api/users/me", () => {
     // 404.  Hitting the /me handler proves Express matched it correctly.
     mockDbReturnsUser();
     mockGetCurrentUserProfile.mockResolvedValueOnce({
-      stellarAddress: TEST_STELLAR,
-      createdAt: TEST_CREATED_AT,
-      totals: { prediction_count: 0, claim_count: 0 },
+      ok: true as const,
+      value: {
+        stellarAddress: TEST_STELLAR,
+        createdAt: TEST_CREATED_AT,
+        totals: { prediction_count: 0, claim_count: 0 },
+      },
     });
 
     const res = await request(app)

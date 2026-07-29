@@ -21,6 +21,9 @@ import { logger } from "../config/logger";
 /**
  * Rate-limit context captured at the point of a request.
  */
+/**
+ * Rate-limit context captured at the point of a request.
+ */
 export interface RateLimitContext {
   /** Configured maximum requests allowed in the window */
   limit: number;
@@ -30,6 +33,59 @@ export interface RateLimitContext {
   resetAt: string;
   /** Whether this request was blocked (true = 429 returned) */
   blocked: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Sanitization helpers
+// ---------------------------------------------------------------------------
+
+/** Keys that are stripped / redacted from audit state snapshots. */
+const SENSITIVE_KEYS = new Set([
+  "secret",
+  "password",
+  "token",
+  "authorization",
+  "privatekey",
+  "private_key",
+  "apikey",
+  "api_key",
+]);
+
+/**
+ * Recursively sanitize an object or object part, stripping sensitive keys.
+ *
+ * - Strips any key present in SENSITIVE_KEYS (case-insensitive).
+ * - Preserves JSON structure for nested objects and arrays.
+ *
+ * @param state - any object (may be null/undefined), always returns same type
+ * @returns a copy with sensitive values redacted to "[REDACTED]"
+ */
+export function sanitizeState(
+  state: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null | undefined {
+  if (!state) return state;
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (SENSITIVE_KEYS.has(k.toLowerCase())) {
+      out[k] = "[REDACTED]";
+      continue;
+    }
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = sanitizeState(v as Record<string, unknown>);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = sanitizeState(v as Record<string, unknown>);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out as T;
 }
 
 /**
@@ -46,6 +102,12 @@ export interface AuditEntryInput {
   correlationId?: string;
   /** Optional rate-limit context to enrich the entry */
   rateLimitContext?: RateLimitContext;
+  /** The state before the action took place */
+  beforeState?: Record<string, unknown> | null;
+  /** The state after the action took place */
+  afterState?: Record<string, unknown> | null;
+  /** Optional metadata for enrichment (e.g., endpoint, error details) */
+  metadata?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +133,9 @@ export async function createAuditLog(input: AuditEntryInput): Promise<string> {
     ip: input.ip,
     correlationId,
     rateLimitContext: input.rateLimitContext ?? null,
+    beforeState: input.beforeState !== null ? sanitizeState(input.beforeState) : null,
+    afterState: input.afterState !== null ? sanitizeState(input.afterState) : null,
+    metadata: input.metadata ?? null,
   };
 
   try {
@@ -84,6 +149,9 @@ export async function createAuditLog(input: AuditEntryInput): Promise<string> {
         walletAddress: entry.walletAddress,
         ip: entry.ip,
         rateLimitContext: entry.rateLimitContext,
+        beforeState: entry.beforeState,
+        afterState: entry.afterState,
+        metadata: entry.metadata,
       },
       "audit_log_created",
     );

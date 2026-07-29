@@ -5,7 +5,7 @@ import { createApp } from "../src/index";
 
 process.env.NODE_ENV = "test";
 process.env.PORT = "3001";
-process.env.LOG_LEVEL = "silent";
+process.env.LOG_LEVEL = "fatal";
 process.env.DATABASE_URL = "postgres://localhost/test";
 process.env.JWT_SECRET = "a-very-long-test-secret-at-least-32-bytes!!";
 process.env.JWT_ISSUER = "predictify";
@@ -95,6 +95,38 @@ describe("POST /api/auth/verify", () => {
     expect(res.body.error.code).toBe("challenge_used");
   });
 
+  it("supports ETag and returns 304 on match", async () => {
+    const mockExpiresAt = new Date(Date.now() + 300000);
+    const mockCreatedAt = new Date();
+
+    verifyAndConsume.mockResolvedValueOnce({ nonce, expiresAt: mockExpiresAt });
+    upsertUserByStellarAddress.mockResolvedValueOnce({ id: "user-1", stellarAddress: address, createdAt: mockCreatedAt });
+
+    const payload = {
+      stellarAddress: address,
+      nonce,
+      signature: signatureForNonce(keypair, nonce),
+    };
+
+    const res = await request(app).post("/api/auth/verify").send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.etag).toBeDefined();
+
+    const etag = res.headers.etag;
+
+    verifyAndConsume.mockResolvedValueOnce({ nonce, expiresAt: mockExpiresAt });
+    upsertUserByStellarAddress.mockResolvedValueOnce({ id: "user-1", stellarAddress: address, createdAt: mockCreatedAt });
+
+    const res304 = await request(app)
+      .post("/api/auth/verify")
+      .set("If-None-Match", etag)
+      .send(payload);
+
+    expect(res304.status).toBe(304);
+    expect(res304.body).toEqual({});
+  });
+
   it("returns 401 bad_signature for wrong signer", async () => {
     verifyAndConsume.mockResolvedValueOnce({ nonce, expiresAt: new Date(Date.now() + 300000) });
     const wrongKeypair = Keypair.random();
@@ -109,5 +141,35 @@ describe("POST /api/auth/verify", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe("bad_signature");
+  });
+
+  it("supports ETag and returns 304 on match", async () => {
+    verifyAndConsume.mockResolvedValueOnce({ nonce, expiresAt: new Date(Date.now() + 300000) });
+    upsertUserByStellarAddress.mockResolvedValueOnce({ id: "user-1", stellarAddress: address, createdAt: new Date() });
+
+    const payload = {
+      stellarAddress: address,
+      nonce,
+      signature: signatureForNonce(keypair, nonce),
+    };
+
+    const res = await request(app).post("/api/auth/verify").send(payload);
+    
+    expect(res.status).toBe(200);
+    expect(res.headers.etag).toBeDefined();
+    
+    const etag = res.headers.etag;
+    
+    // We mock the service again to simulate the same response being generated
+    verifyAndConsume.mockResolvedValueOnce({ nonce, expiresAt: new Date(Date.now() + 300000) });
+    upsertUserByStellarAddress.mockResolvedValueOnce({ id: "user-1", stellarAddress: address, createdAt: new Date() });
+
+    const res304 = await request(app)
+      .post("/api/auth/verify")
+      .set("If-None-Match", etag)
+      .send(payload);
+      
+    expect(res304.status).toBe(304);
+    expect(res304.body).toEqual({});
   });
 });

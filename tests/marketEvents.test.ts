@@ -10,11 +10,13 @@ import type { IndexerEvent } from "../src/db/schema";
 describe("toStreamEvent", () => {
   it("converts a DB row to a StreamEvent", () => {
     const row: IndexerEvent = {
-      id: 42,
+      id: "42",
       marketId: "mkt-1",
       eventType: "prediction",
       data: { outcome: "yes", amount: "100" },
       ledger: 12345,
+      txHash: "mock-tx-hash",
+      opIndex: 0,
       createdAt: new Date("2025-06-01T12:00:00Z"),
     };
     const result = toStreamEvent(row);
@@ -26,11 +28,13 @@ describe("toStreamEvent", () => {
 
   it("handles null data field", () => {
     const row: IndexerEvent = {
-      id: 1,
+      id: "1",
       marketId: "mkt-1",
       eventType: "resolved",
       data: null,
       ledger: 100,
+      txHash: "mock-tx-hash",
+      opIndex: 0,
       createdAt: new Date("2025-06-01T12:00:00Z"),
     };
     const result = toStreamEvent(row);

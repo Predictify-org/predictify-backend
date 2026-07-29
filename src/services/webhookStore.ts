@@ -70,6 +70,8 @@ export interface WebhookStore {
   /** Insert a fresh live delivery (attempts = 0). */
   createDelivery(input: NewDelivery): Promise<WebhookDelivery>;
   getDelivery(id: string): Promise<WebhookDelivery | null>;
+  /** List live deliveries newest first using keyset pagination over (createdAt, id). */
+  listDeliveries(cursor: unknown, limit: unknown): Promise<Page<WebhookDelivery>>;
   /** Persist mutated delivery fields (status/attempts/error/nextAttemptAt). */
   updateDelivery(
     id: string,
@@ -98,6 +100,11 @@ export interface WebhookStore {
 
 const dlqKey = (r: DlqRow): CursorKey => ({
   sortValue: r.failedAt.toISOString(),
+  id: r.id,
+});
+
+const deliveryKey = (r: WebhookDelivery): CursorKey => ({
+  sortValue: r.createdAt.toISOString(),
   id: r.id,
 });
 
@@ -135,6 +142,15 @@ export class InMemoryWebhookStore implements WebhookStore {
   async getDelivery(id: string): Promise<WebhookDelivery | null> {
     const row = this.deliveries.get(id);
     return row ? { ...row } : null;
+  }
+
+  async listDeliveries(cursor: unknown, limit: unknown): Promise<Page<WebhookDelivery>> {
+    const sorted = [...this.deliveries.values()].sort((a, b) => {
+      const t = b.createdAt.getTime() - a.createdAt.getTime();
+      return t !== 0 ? t : (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+    });
+    const page = paginate(sorted, deliveryKey, cursor, limit);
+    return { data: page.data.map((r) => ({ ...r })), nextCursor: page.nextCursor };
   }
 
   async updateDelivery(

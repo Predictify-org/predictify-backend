@@ -1,9 +1,9 @@
-import jwt from "jsonwebtoken";
 import { Keypair } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { verifyAndConsume } from "./authChallengeService";
 import { upsertUserByStellarAddress } from "../db/userRepo";
 import { Result, ok, err } from "../errors/RouteError";
+import { signAccessToken } from "./jwtService";
 
 export interface AuthVerifyResult {
   accessToken: string;
@@ -46,15 +46,7 @@ export async function verifyChallengeAndIssueJwt(
 
   const user = await upsertUserByStellarAddress(stellarAddress);
 
-  const accessToken = jwt.sign(
-    { sub: user.stellarAddress },
-    env.JWT_SECRET,
-    {
-      expiresIn: env.JWT_TTL_SECONDS,
-      issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
-    },
-  );
+  const accessToken = signAccessToken({ sub: user.stellarAddress });
 
   return ok({
     accessToken,

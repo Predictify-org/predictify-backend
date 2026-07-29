@@ -1,4 +1,4 @@
-import { getAuditLogs } from "../src/repositories/auditLogRepo";
+import { getAuditLogs, getAuditCounts } from "../src/repositories/auditLogRepo";
 import { db } from "../src/db";
 
 // ── DB Mock ──────────────────────────────────────────────────────────────────
@@ -9,6 +9,7 @@ jest.mock("../src/db", () => {
     from: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
     limit: jest.fn(),
   };
   return {
@@ -100,5 +101,54 @@ describe("auditLogRepo", () => {
     expect(result.data).toHaveLength(1);
     expect(result.data[0].id).toBe("1");
     expect(result.nextCursor).not.toBeNull();
+  });
+});
+
+describe("getAuditCounts", () => {
+  const mockGroupBy = mockDb.groupBy as jest.Mock;
+  const mockOrderBy = mockDb.orderBy as jest.Mock;
+  const mockWhere = mockDb.where as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("groups by action and returns a total plus per-action counts", async () => {
+    mockOrderBy.mockResolvedValueOnce([
+      { action: "market.create", count: 2 },
+      { action: "user.login", count: 1 },
+    ]);
+
+    const result = await getAuditCounts({});
+
+    expect(mockDb.select).toHaveBeenCalled();
+    expect(mockGroupBy).toHaveBeenCalled();
+    expect(mockWhere).toHaveBeenCalledWith(undefined);
+    expect(result).toEqual({
+      totalCount: 3,
+      byAction: [
+        { action: "market.create", count: 2 },
+        { action: "user.login", count: 1 },
+      ],
+    });
+  });
+
+  it("applies startDate/endDate filters", async () => {
+    mockOrderBy.mockResolvedValueOnce([]);
+
+    const startDate = new Date("2026-06-27T00:00:00Z");
+    const endDate = new Date("2026-06-27T23:59:59Z");
+
+    await getAuditCounts({ startDate, endDate });
+
+    expect(mockWhere).toHaveBeenCalledWith(expect.anything());
+  });
+
+  it("returns zero totals when there are no matching entries", async () => {
+    mockOrderBy.mockResolvedValueOnce([]);
+
+    const result = await getAuditCounts({});
+
+    expect(result).toEqual({ totalCount: 0, byAction: [] });
   });
 });

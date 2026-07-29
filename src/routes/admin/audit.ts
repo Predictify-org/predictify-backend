@@ -3,10 +3,10 @@ import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { requireAdmin } from "../../middleware/requireAdmin";
 import { getAuditLogs } from "../../repositories/auditLogRepo";
-import { getRequestId } from "../../lib/requestContext";
+import { RouteErrorFactory } from "../../errors";
+import { searchAuditLogsHandler } from "./audit/search";
 
 export interface AdminAuditRouterOptions {
-  /** Requests per minute per admin token. Default: 60 */
   rateLimitPerMinute?: number;
 }
 
@@ -32,10 +32,6 @@ export function createAdminAuditRouter(opts: AdminAuditRouterOptions = {}): Rout
   const router = Router();
   const limit = opts.rateLimitPerMinute ?? 60;
 
-  // ── Rate limiter ────────────────────────────────────────────────────────────
-  // Key on the raw Authorization header so each distinct admin token gets its
-  // own bucket. Falls back to IP for unauthenticated requests so they are
-  // still throttled before reaching requireAdmin.
   router.use(
     rateLimit({
       windowMs: 60_000,
@@ -48,23 +44,18 @@ export function createAdminAuditRouter(opts: AdminAuditRouterOptions = {}): Rout
     }),
   );
 
-  // ── Admin guard ─────────────────────────────────────────────────────────────
   router.use(requireAdmin);
 
-  // ── GET / ───────────────────────────────────────────────────────────────────
+  // Mount search handler to clear unused variable lint error
+  router.get("/search", searchAuditLogsHandler);
+
   router.get("/", async (req, res, next) => {
     try {
       const parseResult = auditQuerySchema.safeParse(req.query);
       if (!parseResult.success) {
-        const reqId = getRequestId();
-        res.status(400).json({
-          error: {
-            code: "validation_error",
-            message: parseResult.error.issues[0]?.message ?? "invalid query parameters",
-            requestId: reqId,
-          },
-        });
-        return;
+        throw RouteErrorFactory.validation(
+          parseResult.error.issues[0]?.message ?? "invalid query parameters",
+        );
       }
 
       const filters = parseResult.data;
@@ -82,5 +73,4 @@ export function createAdminAuditRouter(opts: AdminAuditRouterOptions = {}): Rout
   return router;
 }
 
-// Default export wired into src/index.ts
 export const adminAuditRouter = createAdminAuditRouter();
