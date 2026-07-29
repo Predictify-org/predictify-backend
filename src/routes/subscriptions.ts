@@ -34,6 +34,8 @@ import {
   patchSubscriptionBodySchema,
   subscriptionIdParamSchema,
 } from "../validators/subscriptions";
+import { createAuditLog, sanitizeState } from "../services/auditService";
+import { getCorrelationId } from "../middleware/correlation";
 
 export const subscriptionsRouter = Router();
 
@@ -112,6 +114,17 @@ subscriptionsRouter.post("/", async (req, res, next) => {
 
     // Return the secret only once, at creation time.
     res.status(201).json({ data: { ...serializeSub(row!), secret } });
+
+    // Audit the creation (after success)
+    void createAuditLog({
+      action: "admin.subscription.create",
+      walletAddress: req.adminAddress,
+      ip: req.ip,
+      correlationId: getCorrelationId(),
+      beforeState: null,
+      afterState: row,
+      metadata: { endpoint: req.path },
+    });
   } catch (err) {
     next(err);
   }
@@ -200,7 +213,19 @@ subscriptionsRouter.patch("/:id", async (req, res, next) => {
 
     logger.info({ reqId, subscriptionId: updated!.id }, "subscription_updated");
 
+    // Return updated subscription to client
     res.json({ data: serializeSub(updated!) });
+
+    // Audit the update (after success)
+    void createAuditLog({
+      action: "admin.subscription.update",
+      walletAddress: req.adminAddress,
+      ip: req.ip,
+      correlationId: getCorrelationId(),
+      beforeState: existing,
+      afterState: updated,
+      metadata: { endpoint: req.path },
+    });
   } catch (err) {
     next(err);
   }
@@ -224,101 +249,36 @@ subscriptionsRouter.delete("/:id", async (req, res, next) => {
 
     const { id } = paramParsed.data;
 
-    const result = await db
-      .delete(webhookSubscriptions)
+    // Fetch the subscription first for audit before deletion
+    const [existing] = await db
+      .select()
+      .from(webhookSubscriptions)
       .where(eq(webhookSubscriptions.id, id));
 
-    if (result.rowCount === 0) {
+    if (!existing) {
       logger.debug({ reqId, subscriptionId: id }, "subscription_not_found");
       throw RouteErrorFactory.notFound("Subscription not found");
     }
 
+    const result = await db
+      .delete(webhookSubscriptions)
+      .where(eq(webhookSubscriptions.id, id));
+
     logger.info({ reqId, subscriptionId: id }, "subscription_deleted");
 
-    res.status(204).send();
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Create
-subscriptionsRouter.post("/", async (req, res, next) => {
-  const reqId = getRequestId();
-  try {
-    const { url, events, active = true } = req.body ?? {};
-
-    const [row] = await db.insert(webhookSubscriptions).values({ url, events, active }).returning();
-
-    // Audit the creation
-    void createAuditLog({
-      action: "admin.subscription.create",
-      walletAddress: req.adminAddress,
-      ip: req.ip,
-      correlationId: reqId,
-      beforeState: null,
-      afterState: row,
-    });
-
-    return res.status(201).json({ data: row });
-  } catch (err) {
-    return next(err);
-  }
-});
-
-// Update
-subscriptionsRouter.patch("/:id", async (req, res, next) => {
-  const reqId = getRequestId();
-  try {
-    const id = req.params.id;
-
-    const [existing] = await db.select().from(webhookSubscriptions).where(eq(webhookSubscriptions.id, id));
-
-    if (!existing) {
-      return res.status(404).json({ error: { code: "not_found" } });
-    }
-
-    const [updated] = await db.update(webhookSubscriptions).set({ ...req.body, updatedAt: new Date() }).where(eq(webhookSubscriptions.id, id)).returning();
-
-    void createAuditLog({
-      action: "admin.subscription.update",
-      walletAddress: req.adminAddress,
-      ip: req.ip,
-      correlationId: reqId,
-      beforeState: existing,
-      afterState: updated,
-    });
-
-    return res.json({ data: updated });
-  } catch (err) {
-    return next(err);
-  }
-});
-
-// Delete
-subscriptionsRouter.delete("/:id", async (req, res, next) => {
-  const reqId = getRequestId();
-  try {
-    const id = req.params.id;
-
-    const [existing] = await db.select().from(webhookSubscriptions).where(eq(webhookSubscriptions.id, id));
-
-    if (!existing) {
-      return res.status(404).json({ error: { code: "not_found" } });
-    }
-
-    const result = await db.delete(webhookSubscriptions).where(eq(webhookSubscriptions.id, id));
-
+    // Audit the deletion (after success)
     void createAuditLog({
       action: "admin.subscription.delete",
       walletAddress: req.adminAddress,
       ip: req.ip,
-      correlationId: reqId,
+      correlationId: getCorrelationId(),
       beforeState: existing,
       afterState: null,
+      metadata: { endpoint: req.path },
     });
 
-    return res.status(204).send();
+    res.status(204).send();
   } catch (err) {
-    return next(err);
+    next(err);
   }
 });
