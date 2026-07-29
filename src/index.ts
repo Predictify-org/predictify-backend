@@ -39,6 +39,7 @@ import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminFeatureFlagsRouter } from "./routes/admin/featureFlags";
 import { adminUsersRouter } from "./routes/adminUsers";
 import { adminNotesRouter } from "./routes/admin/users/notes";
+import { adminImpersonateRouter } from "./routes/admin/users/impersonate";
 import { leaderboardRouter } from "./routes/leaderboard";
 import { globalLeaderboardRouter } from "./routes/leaderboard/global";
 import { createDocsRouter } from "./routes/docs";
@@ -214,6 +215,10 @@ export function createApp(): express.Express {
   app.use("/api/audit/counts", auditCountsRouter);
   app.use("/api/audit/user", userAuditRouter);
   app.use("/api/admin/health", adminHealthRouter);
+  // Mounted ahead of the other /api/admin/users routers: it only matches
+  // POST /:address/impersonate and attaches its rate limit and admin guard to
+  // that route alone, so unrelated requests fall straight through untouched.
+  app.use("/api/admin/users", adminImpersonateRouter);
   app.use("/api/admin/users", adminUsersRouter);
   app.use("/api/admin/users", adminNotesRouter);
   app.use("/api/feature-flags", featureFlagsRouter);
