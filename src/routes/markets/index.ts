@@ -61,6 +61,7 @@ marketsRouter.use("/:id/prediction-count", predictionCountRouter);
 marketsRouter.use("/:id/watchers", watchersRouter);
 marketsRouter.use("/:id/audit", marketAuditRouter);
 marketsRouter.use("/:id/disputes", disputesRouter);
+marketsRouter.use("/", predictionsRouter);
 
 marketsRouter.get("/search", trackMarketsMetrics("search"), async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
