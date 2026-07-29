@@ -15,6 +15,7 @@ import { accessLog } from "../../middleware/accessLog";
 import { marketsCors } from "../../middleware/cors";
 import { listFeaturedMarkets } from "../../services/marketFeatureService";
 import { logger } from "../../config/logger";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { RouteErrorFactory } from "../../errors";
 import { conditionalGet } from "../../middleware/etag";
 import { recommendationsRouter } from "./recommendations";

@@ -96,7 +96,13 @@ usersRouter.use(accessLog);
 // ---------------------------------------------------------------------------
 // Per-request timeout with graceful abort on /api/users
 // ---------------------------------------------------------------------------
-usersRouter.use(requestTimeout(15000)); // 15 seconds timeout
+usersRouter.use(
+  requestTimeout(15000, {
+    statusCode: 504,
+    code: "gateway_timeout",
+    message: "Request timed out",
+  }),
+); // 15s timeout → 504 Gateway Timeout
 
 // ---------------------------------------------------------------------------
 // Per-endpoint Prometheus metrics for /api/users
