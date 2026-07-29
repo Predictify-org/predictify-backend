@@ -54,6 +54,7 @@ import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
 import { auditHealthRouter } from "./routes/audit/health";
+import { userAuditRouter } from "./routes/audit/user";
 import { adminHealthRouter } from "./routes/admin/health";
 import { adminMarketsRouter } from "./routes/admin/markets";
 import { adminSchemaVersionsRouter } from "./routes/admin/schema-versions";
@@ -203,6 +204,7 @@ export function createApp(): express.Express {
   app.use("/api/admin/audit", adminAuditExportRouter);
   app.use("/api/audit/health", auditHealthRouter);
   app.use("/api/audit/counts", auditCountsRouter);
+  app.use("/api/audit/user", userAuditRouter);
   app.use("/api/admin/health", adminHealthRouter);
   app.use("/api/admin/users", adminUsersRouter);
   app.use("/api/admin/users", adminNotesRouter);
