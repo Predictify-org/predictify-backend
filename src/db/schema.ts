@@ -379,6 +379,13 @@ export const notifications = pgTable(
       t.userId,
       t.readAt,
     ),
+    // Composite index for cursor-based keyset pagination on GET /api/notifications.
+    // Covers: WHERE user_id = ? AND (created_at < ? OR ...) ORDER BY created_at DESC, id DESC
+    notificationsUserIdCursorIdx: index("notifications_user_id_cursor_idx").on(
+      t.userId,
+      t.createdAt,
+      t.id,
+    ),
   }),
 );
 
