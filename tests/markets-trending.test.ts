@@ -101,4 +101,39 @@ describe("GET /api/markets/trending", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toBeDefined();
   });
+
+  // ── ETag / conditional GET ─────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    mockedService.getTrending.mockResolvedValue(mockTrendingMarkets as any);
+
+    const res = await request(createApp()).get("/api/markets/trending");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    mockedService.getTrending.mockResolvedValue(mockTrendingMarkets as any);
+
+    const first = await request(createApp()).get("/api/markets/trending");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(createApp())
+      .get("/api/markets/trending")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    mockedService.getTrending.mockResolvedValue(mockTrendingMarkets as any);
+
+    const res = await request(createApp())
+      .get("/api/markets/trending")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
+  });
 });

@@ -87,7 +87,7 @@ marketsRouter.get("/search", trackMarketsMetrics("search"), async (req, res, nex
 
     const result = await searchMarkets({ query: q, limit, offset });
 
-    return res.status(200).json({
+    const payload = {
       data: result.data,
       total: result.total,
       limit,
@@ -108,7 +108,13 @@ marketsRouter.get("/search", trackMarketsMetrics("search"), async (req, res, nex
         total: result.total,
         fallback: result.fallback,
       },
-    });
+    };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
+    return res.status(200).json(payload);
   } catch (err) {
     logger.error({ reqId, correlationId: reqId, err }, "markets_search_failed");
     return next(err);
@@ -162,7 +168,13 @@ marketsRouter.get("/featured", trackMarketsMetrics("featured"), async (req, res,
 
     const { limit } = parsed.data;
     const data = await listFeaturedMarkets(limit);
-    return res.json({ data });
+    const payload = { data };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
+    return res.json(payload);
   } catch (e) {
     logger.error({ reqId, correlationId: reqId, err: e }, "markets_featured_failed");
     return next(e);
@@ -179,11 +191,17 @@ marketsRouter.get("/upcoming", trackMarketsMetrics("upcoming"), async (req, res,
 
     const { limit } = parsed.data;
     const data = await listUpcomingMarkets({ limit });
+    const payload = { data };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
+
     logger.info(
       { reqId, correlationId: reqId, count: data.length },
       "markets_upcoming_listed",
     );
-    return res.json({ data });
+    return res.json(payload);
   } catch (err) {
     logger.error(
       { reqId, correlationId: reqId, err },

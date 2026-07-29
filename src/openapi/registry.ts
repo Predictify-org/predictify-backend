@@ -655,10 +655,32 @@ registry.registerPath({
   path: "/api/markets",
   operationId: "listMarkets",
   tags: ["Markets"],
-  summary: "List all markets",
+  summary: "List all markets with cursor pagination",
+  description:
+    "Returns a cursor-paginated list of markets. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match on subsequent requests; if the page is unchanged " +
+    "the server responds 304 Not Modified (no body).",
+  request: {
+    headers: z.object({
+      "if-none-match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the page is unchanged.",
+        param: { name: "If-None-Match", in: "header" },
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Array of markets",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: z.array(Market) }),
@@ -695,6 +717,13 @@ registry.registerPath({
         },
       },
     },
+    304: {
+      description: "Not Modified — page unchanged since the ETag in If-None-Match.",
+    },
+    400: {
+      description: "Invalid query parameters",
+      content: { "application/json": { schema: ErrorBody } },
+    },
   },
 });
 
@@ -704,6 +733,9 @@ registry.registerPath({
   operationId: "searchMarkets",
   tags: ["Markets"],
   summary: "Full-text search across markets",
+  description:
+    "Full-text search with fuzzy trigram fallback. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if results are unchanged the server responds 304 Not Modified.",
   request: {
     query: z.object({
       q: z.string().min(1),
@@ -711,10 +743,26 @@ registry.registerPath({
       offset: z.coerce.number().int().nonnegative().default(0).optional(),
       page: z.coerce.number().int().positive().optional(),
     }),
+    headers: z.object({
+      "if-none-match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when results are unchanged.",
+        param: { name: "If-None-Match", in: "header" },
+      }),
+    }),
   },
   responses: {
     200: {
       description: "Search results",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: MarketSearchResult,
@@ -758,6 +806,9 @@ registry.registerPath({
           },
         },
       },
+    },
+    304: {
+      description: "Not Modified — search results unchanged since the ETag in If-None-Match.",
     },
     400: {
       description: "Missing query parameter",
@@ -822,10 +873,31 @@ registry.registerPath({
   operationId: "getMarketById",
   tags: ["Markets"],
   summary: "Get a market by ID",
-  request: { params: z.object({ id: z.string() }) },
+  description:
+    "Returns a single market by ID. Supports strong ETag / conditional GET: " +
+    "send the ETag back as If-None-Match; if unchanged the server responds 304 Not Modified.",
+  request: {
+    params: z.object({ id: z.string() }),
+    headers: z.object({
+      "if-none-match": z.string().optional().openapi({
+        description: "ETag from a previous 200 response. Triggers 304 when the market is unchanged.",
+        param: { name: "If-None-Match", in: "header" },
+      }),
+    }),
+  },
   responses: {
     200: {
       description: "Market",
+      headers: {
+        ETag: {
+          description: "Strong ETag (SHA-256) of the response body.",
+          schema: { type: "string" },
+        },
+        "Cache-Control": {
+          description: "Always no-cache so clients revalidate before reuse.",
+          schema: { type: "string", example: "no-cache" },
+        },
+      },
       content: {
         "application/json": {
           schema: z.object({ data: Market }),
@@ -848,6 +920,14 @@ registry.registerPath({
           },
         },
       },
+    },
+    404: {
+      description: "Not found",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+    304: {
+      description: "Not Modified — market unchanged since the ETag in If-None-Match.",
     },
     404: {
       description: "Not found",

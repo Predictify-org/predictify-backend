@@ -414,6 +414,85 @@ describe("GET /api/markets/tags", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: [] });
   });
+
+  // ── ETag / conditional GET ────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    const mockTagsResult = [{ tag: "sports", count: 5 }];
+    const mockDb = {
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => ({
+            orderBy: jest.fn(() => ({
+              limit: jest.fn(async () => []),
+            })),
+          })),
+        })),
+      })),
+      transaction: jest.fn(async (fn: Function) => fn({})),
+      execute: jest.fn(async () => ({ rows: mockTagsResult })),
+    } as unknown as Database;
+
+    setDbForTests(mockDb);
+
+    const res = await request(createApp()).get("/api/markets/tags");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    const mockTagsResult = [{ tag: "sports", count: 5 }];
+    const mockDb = {
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => ({
+            orderBy: jest.fn(() => ({
+              limit: jest.fn(async () => []),
+            })),
+          })),
+        })),
+      })),
+      transaction: jest.fn(async (fn: Function) => fn({})),
+      execute: jest.fn(async () => ({ rows: mockTagsResult })),
+    } as unknown as Database;
+
+    setDbForTests(mockDb);
+    const first = await request(createApp()).get("/api/markets/tags");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(createApp())
+      .get("/api/markets/tags")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    const mockTagsResult = [{ tag: "sports", count: 5 }];
+    const mockDb = {
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => ({
+            orderBy: jest.fn(() => ({
+              limit: jest.fn(async () => []),
+            })),
+          })),
+        })),
+      })),
+      transaction: jest.fn(async (fn: Function) => fn({})),
+      execute: jest.fn(async () => ({ rows: mockTagsResult })),
+    } as unknown as Database;
+
+    setDbForTests(mockDb);
+
+    const res = await request(createApp())
+      .get("/api/markets/tags")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
+  });
 });
 
 describe("GET /api/markets Timeout Validation", () => {
