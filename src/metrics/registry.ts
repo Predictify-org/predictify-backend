@@ -99,8 +99,8 @@ export const signupAnomalyTopScore = new Gauge({
 
 export const marketsRequestDuration = new Histogram({
   name: "markets_request_duration_seconds",
-  help: "Duration of /api/markets requests in seconds, segmented by endpoint, method, and status code",
-  labelNames: ["endpoint", "method", "status"] as const,
+  help: "Duration of /api/markets requests in seconds, segmented by route, method, and status code",
+  labelNames: ["route", "method", "status"] as const,
   buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });

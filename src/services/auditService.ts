@@ -21,9 +21,6 @@ import { logger } from "../config/logger";
 /**
  * Rate-limit context captured at the point of a request.
  */
-/**
- * Rate-limit context captured at the point of a request.
- */
 export interface RateLimitContext {
   /** Configured maximum requests allowed in the window */
   limit: number;
@@ -77,7 +74,7 @@ export function sanitizeState(
       out[k] = v;
     }
   }
-  return out as T;
+  return out;
 }
 
 /**
@@ -100,6 +97,10 @@ export interface AuditEntryInput {
   afterState?: Record<string, unknown> | null;
   /** Optional metadata for enrichment (e.g., endpoint, error details) */
   metadata?: Record<string, unknown>;
+  /** Entity type being mutated (e.g. "Subscription", "Market") */
+  entityType?: string;
+  /** Primary key of the entity being mutated */
+  entityId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +120,13 @@ export interface AuditEntryInput {
 export async function createAuditLog(input: AuditEntryInput): Promise<string> {
   const correlationId = input.correlationId ?? uuidv4();
 
-  const entry = {
+const entry = {
     action: input.action,
     walletAddress: input.walletAddress ?? null,
     ip: input.ip,
     correlationId,
+    entityType: input.entityType ?? null,
+    entityId: input.entityId ?? null,
     rateLimitContext: input.rateLimitContext ?? null,
     beforeState: input.beforeState !== null ? sanitizeState(input.beforeState) : null,
     afterState: input.afterState !== null ? sanitizeState(input.afterState) : null,
@@ -140,6 +143,8 @@ export async function createAuditLog(input: AuditEntryInput): Promise<string> {
         action: entry.action,
         walletAddress: entry.walletAddress,
         ip: entry.ip,
+        entityType: entry.entityType,
+        entityId: entry.entityId,
         rateLimitContext: entry.rateLimitContext,
         beforeState: entry.beforeState,
         afterState: entry.afterState,
