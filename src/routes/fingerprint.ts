@@ -32,6 +32,31 @@ import { getCorrelationId } from "../middleware/correlation";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 
+// In-flight request tracking for graceful shutdown drain
+let inFlightFingerprintRequests = 0;
+
+export async function drainFingerprintRequests(timeoutMs = 10000): Promise<void> {
+  const start = Date.now();
+  if (inFlightFingerprintRequests === 0) {
+    logger.info("No in-flight /api/fingerprint requests to drain");
+    return;
+  }
+
+  logger.info({ inFlight: inFlightFingerprintRequests }, "Draining in-flight /api/fingerprint requests...");
+
+  while (inFlightFingerprintRequests > 0) {
+    if (Date.now() - start > timeoutMs) {
+      logger.warn({ inFlight: inFlightFingerprintRequests }, "Timeout waiting for /api/fingerprint requests to drain");
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  if (inFlightFingerprintRequests === 0) {
+    logger.info("Successfully drained all /api/fingerprint requests");
+  }
+}
+
 export const fingerprintRouter = Router();
 
 /**
@@ -45,6 +70,7 @@ fingerprintRouter.get(
   "/",
   fingerprintRateLimiter,
   (req: Request, res: Response, next: NextFunction): void => {
+    inFlightFingerprintRequests++;
     const correlationId = getCorrelationId() ?? "unknown";
     const reqId = getRequestId() ?? "unknown";
 
@@ -76,6 +102,8 @@ fingerprintRouter.get(
         "fingerprint_route_error",
       );
       next(err);
+    } finally {
+      inFlightFingerprintRequests--;
     }
   },
 );

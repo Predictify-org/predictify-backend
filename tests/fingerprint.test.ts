@@ -48,6 +48,7 @@
 
 import request from "supertest";
 import { createApp } from "../src/index";
+import { drainFingerprintRequests } from "../src/routes/fingerprint";
 import {
   normalizeContentType,
   normalizeAccept,
@@ -451,7 +452,17 @@ describe("GET /api/fingerprint", () => {
   });
 });
 
-// ── 35: fingerprintMiddleware error handling ────────────────────────────
+// ── 35: fingerprintRoute drain ───────────────────────────────────────
+
+describe("drainFingerprintRequests()", () => {
+  it("returns immediately when no in-flight requests", async () => {
+    const start = Date.now();
+    await drainFingerprintRequests(1000);
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+});
+
+// ── 36: fingerprintMiddleware error handling ────────────────────────────
 
 describe("fingerprintMiddleware error handling", () => {
   it("calls next() and does not throw when an internal error occurs", () => {
