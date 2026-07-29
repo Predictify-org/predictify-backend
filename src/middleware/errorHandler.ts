@@ -1,12 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { randomUUID } from "crypto";
-import { ZodError } from "zod";
-import { logger } from "../config/logger";
-import { AppError, ErrorCodes, isRouteError, HTTP_STATUS, toErrorEnvelope } from "../errors";
-import { getRequestId } from "../lib/requestContext";
-import type { NextFunction, Request, Response } from "express";
-import { randomUUID } from "crypto";
 import { logger } from "../config/logger";
 import { AppError, ErrorCodes, isRouteError, HTTP_STATUS, toErrorEnvelope } from "../errors";
 import { getRequestId } from "../lib/requestContext";
@@ -14,9 +8,7 @@ import { getRequestId } from "../lib/requestContext";
 function requestIdFrom(req: Request, fallback: string): string {
   return (
     getRequestId() ??
-    (typeof (req as { id?: unknown }).id === "string"
-      ? (req as { id?: string }).id
-      : undefined) ??
+    (typeof (req as { id?: unknown }).id === "string" ? (req as { id?: string }).id : undefined) ??
     fallback
   );
 }
@@ -48,7 +40,6 @@ export function errorHandler(
       logPayload.cause = err.cause;
     }
     logger.error(logPayload, "route_error");
-
     const envelope = toErrorEnvelope(err, correlationId);
     res.status(status).json({ error: envelope });
     return;
