@@ -21,6 +21,11 @@ auditRouter.use(accessLog);
  *       - Audit
  *     parameters:
  *       - in: query
+ *         name: cursor
+ *         schema:
+ *           type: string
+ *         description: Opaque cursor for the next page
+ *       - in: query
  *         name: limit
  *         schema:
  *           type: integer
@@ -30,16 +35,19 @@ auditRouter.use(accessLog);
  *         description: Maximum number of events to return
  *     responses:
  *       200:
- *         description: A list of audit events
+ *         description: A cursor-paginated page of audit events
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 events:
+ *                 items:
  *                   type: array
  *                   items:
  *                     type: object
+ *                 next_cursor:
+ *                   type: string
+ *                   nullable: true
  *       400:
  *         description: Invalid input
  *         content:
@@ -56,6 +64,7 @@ auditRouter.get("/", (req, res) => {
     return;
   }
 
-  // Placeholder for real audit events
-  res.json({ events: [] });
+  // Placeholder for real audit events. Keep the pagination envelope stable
+  // while the backing audit store is introduced.
+  res.json({ items: [], next_cursor: null });
 });
