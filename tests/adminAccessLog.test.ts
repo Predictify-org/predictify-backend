@@ -137,6 +137,18 @@ describe("Admin Access Log", () => {
     loggerInfoSpy.mockClear();
   });
 
+  it("records an anonymous actor and zero size when no identity or length exists", async () => {
+    const req = makeReq({ path: "/api/admin" });
+    const res = makeRes();
+    accessLog(req, res, jest.fn());
+    await fireFinish(res);
+
+    expect(loggerInfoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: "anonymous", size: 0, statusCode: 200 }),
+      "admin_access_log",
+    );
+  });
+
   // ── A. BASIC SUCCESSFUL REQUEST ────────────────────────────────────────
 
   it("emits an admin_access_log entry on response finish with all required fields", async () => {
