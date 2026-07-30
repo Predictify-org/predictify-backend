@@ -53,6 +53,16 @@ describe("POST /api/admin/users/:address/impersonate", () => {
     expect(res.body).toEqual({ error: { code: "forbidden" } });
   });
 
+  it("sets API security headers on rejected impersonation requests", async () => {
+    const res = await request(makeApp()).post(`/api/admin/users/${USER_ADDRESS}/impersonate`).send({});
+
+    expect(res.headers["content-security-policy"]).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
   it("returns 403 with a non-admin JWT", async () => {
     const res = await request(makeApp())
       .post(`/api/admin/users/${USER_ADDRESS}/impersonate`)

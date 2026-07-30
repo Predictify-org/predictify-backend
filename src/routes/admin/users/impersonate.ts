@@ -39,6 +39,7 @@ import { signAccessToken } from "../../../services/jwtService";
 import { createAuditLog } from "../../../services/auditService";
 import { getRequestId } from "../../../lib/requestContext";
 import { logger } from "../../../config/logger";
+import { securityHeaders } from "../../../middleware/securityHeaders";
 import { db } from "../../../db/client";
 import { adminAuditLog } from "../../../db/schema";
 import {
@@ -88,6 +89,7 @@ export function createAdminImpersonateRouter(
   // merely pass through on their way to a later mount.
   router.post(
     "/:address/impersonate",
+    securityHeaders,
     impersonateRateLimit,
     requireAdmin,
     async (req, res, next) => {
