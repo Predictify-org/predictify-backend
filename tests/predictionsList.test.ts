@@ -118,23 +118,43 @@ jest.mock("../src/routes/predictions/share", () => ({
   },
 }));
 
+jest.mock("../src/routes/predictions/health", () => {
+  const { Router } = jest.requireActual("express") as typeof import("express");
+  return { predictionsHealthRouter: Router(), createPredictionsHealthRouter: () => Router() };
+});
+
 // ---------------------------------------------------------------------------
-// 6. Mock the predictionRepo so route tests stay in-process.
+// 6. Mock prom-client side effects in src/metrics/registry.
+//    collectDefaultMetrics starts background timers that interfere with the
+//    jest event loop and cause GET /api/predictions to hang (~15 s timeout).
+// ---------------------------------------------------------------------------
+jest.mock("../src/metrics/registry", () => ({
+  predictionsListTotal: { inc: jest.fn() },
+  predictionExplainTotal: { inc: jest.fn() },
+  predictionsRequestDuration: { observe: jest.fn() },
+  httpRequestDuration: { observe: jest.fn() },
+  endpointRequestDuration: { observe: jest.fn() },
+  endpointRequestsTotal: { inc: jest.fn() },
+  register: { metrics: jest.fn(), registerMetric: jest.fn(), getSingleMetric: jest.fn() },
+}));
+
+// ---------------------------------------------------------------------------
+// 7. Mock the predictionRepo so route tests stay in-process.
 // ---------------------------------------------------------------------------
 jest.mock("../src/repositories/predictionRepo");
 
 // ---------------------------------------------------------------------------
-// 7. Project imports — safe after mocks are in place.
+// 8. Project imports — safe after mocks are in place.
 // ---------------------------------------------------------------------------
 import express from "express";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import { predictionsRouter } from "../src/routes/predictions";
 import { errorHandler } from "../src/middleware/errorHandler";
+import { correlationMiddleware } from "../src/middleware/correlation";
 import { listPredictions } from "../src/repositories/predictionRepo";
 import { encodeCursor } from "../src/utils/cursor";
 import { generateETag } from "../src/middleware/etag";
-import { env } from "../src/config/env";
 
 const mockListPredictions = listPredictions as jest.MockedFunction<
   typeof listPredictions
@@ -146,6 +166,7 @@ const mockListPredictions = listPredictions as jest.MockedFunction<
 function makeApp(): express.Express {
   const app = express();
   app.use(express.json());
+  app.use(correlationMiddleware);
   app.use("/api/predictions", predictionsRouter);
   app.use(errorHandler);
   return app;
@@ -167,11 +188,11 @@ const MOCK_USER_ROW = { id: TEST_USER_ID, stellarAddress: STELLAR_ADDRESS };
 function validToken(userId = TEST_USER_ID): string {
   return jwt.sign(
     { sub: STELLAR_ADDRESS, userId },
-    env.JWT_SECRET,
+    process.env.JWT_SECRET!,
     {
-      issuer: env.JWT_ISSUER,
-      audience: env.JWT_AUDIENCE,
-      expiresIn: env.JWT_TTL_SECONDS,
+      issuer: process.env.JWT_ISSUER,
+      audience: process.env.JWT_AUDIENCE,
+      expiresIn: process.env.JWT_TTL_SECONDS,
     },
   );
 }
@@ -609,7 +630,6 @@ describe("GET /api/predictions — route", () => {
 describe("listPredictions — repository", () => {
   // We need to import the *real* function, not the jest.mock() stub.
   // jest.requireActual bypasses the module-level mock set up above.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { listPredictions: realListPredictions } = jest.requireActual(
     "../src/repositories/predictionRepo",
   ) as typeof import("../src/repositories/predictionRepo");
