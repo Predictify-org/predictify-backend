@@ -8,10 +8,11 @@ jest.mock("../src/services/jwtService");
 jest.mock("../src/services/auditService");
 jest.mock("../src/db/client", () => ({ db: { insert: jest.fn().mockReturnValue({ values: jest.fn().mockResolvedValue({}) }) } }));
 
-import { signAccessToken } from "../src/services/jwtService";
+import { signAccessToken, verifyAccessToken } from "../src/services/jwtService";
 import { createAuditLog } from "../src/services/auditService";
 
 const mockSignAccessToken = signAccessToken as jest.MockedFunction<typeof signAccessToken>;
+const mockVerifyAccessToken = verifyAccessToken as jest.MockedFunction<typeof verifyAccessToken>;
 const mockCreateAuditLog = createAuditLog as jest.MockedFunction<typeof createAuditLog>;
 
 const SECRET = process.env.JWT_SECRET ?? "test-jwt-secret-that-is-at-least-32-chars!";
@@ -39,12 +40,27 @@ function makeApp(rateLimitPerMinute = 60): express.Express {
 describe("POST /api/admin/users/:address/impersonate", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockVerifyAccessToken.mockImplementation((token: string) => {
+      const decoded = jwt.decode(token) as any;
+      if (!decoded) throw new Error("invalid token");
+      return decoded;
+    });
   });
 
   it("returns 403 with no Authorization header", async () => {
     const res = await request(makeApp()).post(`/api/admin/users/${USER_ADDRESS}/impersonate`).send({});
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: { code: "forbidden" } });
+  });
+
+  it("sets API security headers on rejected impersonation requests", async () => {
+    const res = await request(makeApp()).post(`/api/admin/users/${USER_ADDRESS}/impersonate`).send({});
+
+    expect(res.headers["content-security-policy"]).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
   });
 
   it("returns 403 with a non-admin JWT", async () => {
@@ -80,6 +96,8 @@ describe("POST /api/admin/users/:address/impersonate", () => {
       expect.objectContaining({
         action: "admin.impersonate",
         walletAddress: ADMIN_ADDRESS,
+        beforeState: null,
+        afterState: { targetAddress: USER_ADDRESS, role: "user" },
       })
     );
   });

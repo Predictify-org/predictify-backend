@@ -159,6 +159,29 @@ export function notificationsCors(): ReturnType<typeof createCorsAllowlistMiddle
   return notificationsCorsMiddleware;
 }
 
+/**
+ * Pre-configured CORS middleware for the stats endpoint.
+ * Reads allowed origins from the `STATS_CORS_ALLOWED_ORIGINS` env variable.
+ * When the allowlist is empty, all cross-origin requests to /api/stats are denied.
+ */
+let statsCorsMiddleware: ReturnType<typeof createCorsAllowlistMiddleware> | null = null;
+
+export function statsCors(): ReturnType<typeof createCorsAllowlistMiddleware> {
+  if (!statsCorsMiddleware) {
+    const raw = env.STATS_CORS_ALLOWED_ORIGINS ?? "";
+    const allowedOrigins = raw
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
+    statsCorsMiddleware = createCorsAllowlistMiddleware({
+      allowedOrigins,
+      allowCredentials: true,
+      maxAgeSeconds: 600,
+    });
+  }
+  return statsCorsMiddleware;
+}
+
 export const enforceCors = marketsCors();
 
 /**

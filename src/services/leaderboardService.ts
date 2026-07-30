@@ -1,9 +1,10 @@
 import { db } from "../db/client";
 import { sql } from "drizzle-orm";
 import { redis } from "../config/redis";
-import { LeaderboardPeriod } from "../routes/leaderboard";
+import { LeaderboardPeriod } from "../validators/leaderboard";
 import { logger } from "../config/logger";
 import { AddressAggregate } from "./addressAggregatesService";
+import { encodeCursor, decodeCursor } from "../utils/cursor";
 
 export type LeaderboardEntry = AddressAggregate;
 
@@ -227,4 +228,138 @@ export async function getLeaderboardWithRefresh(
 ): Promise<LeaderboardEntry[]> {
   await refreshLeaderboard(period);
   return getLeaderboard(limit, offset, period);
+}
+
+// ── Cursor-based pagination ──────────────────────────────────────────────────
+
+/**
+ * Zero-pad width for rank in the cursor sortValue.
+ * Supports ranks up to 9 999 999 999 — far beyond any realistic leaderboard.
+ */
+const RANK_PAD_WIDTH = 10;
+
+/**
+ * Cursor-based pagination for the leaderboard.
+ *
+ * Uses `(rank, user_id)` as the keyset — rank is the natural sort column and
+ * user_id is a unique tiebreaker.  This is stable under concurrent writes
+ * because cursor pagination does not skip/duplicate rows when ranks shift
+ * between page loads (unlike OFFSET).
+ *
+ * When called **without** a cursor (first page), the result is cached under
+ * `leaderboard:{period}:{limit}:0` (same key as the offset=0 page) so the
+ * existing cache is reused.
+ *
+ * Cursor-carrying pages are **not** cached because each cursor is unique and
+ * caching would provide little benefit.
+ *
+ * @returns  A page of entries plus an opaque `nextCursor` (or null for the
+ *           last page).
+ */
+export async function getLeaderboardPage(
+  limit: number = 50,
+  period: LeaderboardPeriod = LeaderboardPeriod.ALL_TIME,
+  cursor?: string | null,
+): Promise<{ entries: LeaderboardEntry[]; nextCursor: string | null }> {
+  const viewName = getMaterializationViewName(period);
+  let rows: LeaderboardEntry[];
+
+  if (cursor) {
+    const cursorKey = decodeCursor(cursor);
+    if (!cursorKey) {
+      logger.warn({ cursor }, "Invalid leaderboard cursor, falling back to first page");
+      return getLeaderboardPage(limit, period, undefined);
+    }
+
+    const cursorRank = parseInt(cursorKey.sortValue, 10);
+    const cursorUserId = cursorKey.id;
+
+    const result = await db.execute<LeaderboardEntry>(
+      sql`
+        SELECT user_id, stellar_address, total_predictions, correct_predictions,
+               accuracy_percentage, rank
+        FROM ${sql.identifier(viewName)}
+        WHERE (rank > ${cursorRank}) OR (rank = ${cursorRank} AND user_id::text > ${cursorUserId})
+        ORDER BY rank ASC, user_id ASC
+        LIMIT ${limit + 1}
+      `,
+    );
+    rows = result.rows;
+  } else {
+    const cacheKey = `leaderboard:${period}:${limit}:0`;
+
+    if (redis) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          logger.debug({ cacheKey }, "Cache hit for leaderboard first page");
+          const cachedRows = JSON.parse(cached) as LeaderboardEntry[];
+          return makePage(cachedRows, limit);
+        }
+      } catch (err) {
+        logger.warn(
+          { err, cacheKey },
+          "Cache read failed, proceeding with database query",
+        );
+      }
+    }
+
+    const result = await db.execute<LeaderboardEntry>(
+      sql`
+        SELECT user_id, stellar_address, total_predictions, correct_predictions,
+               accuracy_percentage, rank
+        FROM ${sql.identifier(viewName)}
+        ORDER BY rank ASC, user_id ASC
+        LIMIT ${limit + 1}
+      `,
+    );
+    rows = result.rows;
+
+    if (redis && rows.length > 0) {
+      try {
+        await redis.setex(cacheKey, 300, JSON.stringify(rows.slice(0, limit)));
+      } catch (err) {
+        logger.warn({ err, cacheKey }, "Cache write failed, but query succeeded");
+      }
+    }
+  }
+
+  return makePage(rows, limit);
+}
+
+/**
+ * Refresh the materialized view then return a cursor-based page.
+ */
+export async function getLeaderboardPageWithRefresh(
+  limit: number = 50,
+  period: LeaderboardPeriod = LeaderboardPeriod.ALL_TIME,
+  cursor?: string | null,
+): Promise<{ entries: LeaderboardEntry[]; nextCursor: string | null }> {
+  await refreshLeaderboard(period);
+  return getLeaderboardPage(limit, period, cursor);
+}
+
+/**
+ * Slice the raw DB rows into a page and mint the next-cursor.
+ *
+ * `rows` may contain up to `limit + 1` rows; the extra row (if present) signals
+ * that another page follows.
+ */
+function makePage(
+  rows: LeaderboardEntry[],
+  limit: number,
+): { entries: LeaderboardEntry[]; nextCursor: string | null } {
+  const hasMore = rows.length > limit;
+  const entries = rows.slice(0, limit);
+
+  let nextCursor: string | null = null;
+  if (hasMore && entries.length > 0) {
+    const last = entries[entries.length - 1];
+    nextCursor = encodeCursor({
+      sortValue: String(last.rank).padStart(RANK_PAD_WIDTH, "0"),
+      id: last.user_id,
+    });
+  }
+
+  return { entries, nextCursor };
 }

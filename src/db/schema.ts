@@ -10,13 +10,33 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  stellarAddress: text("stellar_address").notNull().unique(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    stellarAddress: text("stellar_address").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    /**
+     * Composite index for GET /api/users keyset (cursor) pagination.
+     *
+     * The query orders by (created_at DESC, id DESC); without this index
+     * PostgreSQL falls back to a sequential scan + quicksort — O(n) I/O.
+     * With this index the planner uses an Index Scan Backward, reducing I/O
+     * to O(log n + page_size) and eliminating the sort node entirely.
+     *
+     * Created by migration 0025_users_filter_idx (CONCURRENTLY, no table lock).
+     * Rollback: DROP INDEX CONCURRENTLY IF EXISTS users_created_at_id_idx;
+     */
+    usersCreatedAtIdIdx: index("users_created_at_id_idx").on(
+      t.createdAt,
+      t.id,
+    ),
+  }),
+);
 
 export const authChallenges = pgTable("auth_challenges", {
   nonce: text("nonce").primaryKey(),
@@ -164,6 +184,17 @@ export const predictions = pgTable("predictions", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  /**
+   * Number of confirmation attempts made by the predictionsConfirmer worker.
+   * Incremented each tick when no matching indexer event is found.
+   * After MAX_CONFIRM_ATTEMPTS (3) the prediction is marked as failed.
+   */
+  confirmAttempts: integer("confirm_attempts").notNull().default(0),
+  /**
+   * Error message from the most recent failed confirmation attempt.
+   * Set when the prediction transitions to failed after exhausting all attempts.
+   */
+  lastError: text("last_error"),
 });
 
 /**
@@ -379,6 +410,13 @@ export const notifications = pgTable(
       t.userId,
       t.readAt,
     ),
+    // Composite index for cursor-based keyset pagination on GET /api/notifications.
+    // Covers: WHERE user_id = ? AND (created_at < ? OR ...) ORDER BY created_at DESC, id DESC
+    notificationsUserIdCursorIdx: index("notifications_user_id_cursor_idx").on(
+      t.userId,
+      t.createdAt,
+      t.id,
+    ),
   }),
 );
 
@@ -390,13 +428,11 @@ export const auditLogs = pgTable(
     walletAddress: text("wallet_address"),
     ip: text("ip").notNull(),
     correlationId: text("correlation_id").notNull(),
+    entityType: text("entity_type"),
+    entityId: text("entity_id"),
     beforeState: jsonb("before_state"),
     afterState: jsonb("after_state"),
     rateLimitContext: jsonb("rate_limit_context"),
-    /** Snapshot of the relevant state immediately before the mutating action. */
-    beforeState: jsonb("before_state"),
-    /** Snapshot of the relevant state immediately after the mutating action. */
-    afterState: jsonb("after_state"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

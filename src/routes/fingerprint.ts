@@ -1,79 +1,81 @@
-/**
- * fingerprint.ts
- *
- * GET /api/fingerprint
- *
- * Exposes the stable SHA-256 request fingerprint for the calling client.
- * The fingerprint captures the structural identity of the request — method,
- * path, headers, and body hash — enabling forensic correlation, retry
- * detection, and audit-log enrichment.
- *
- * Response shape
- * ──────────────
- * {
- *   "fingerprint":    "<64-char hex SHA-256>",
- *   "correlationId":  "<uuid>",
- *   "method":         "GET",
- *   "path":           "/api/fingerprint",
- *   "computedAt":     "<ISO-8601>"
- * }
- *
- * Headers
- * ───────
- *   X-Request-Fingerprint  → the computed fingerprint
- *   X-Correlation-Id       → correlation ID for distributed tracing
- *   X-Request-Id           → per-request unique ID
- */
-
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { buildFingerprintInputs, computeFingerprint } from "../middleware/fingerprint";
-import { getCorrelationId } from "../middleware/correlation";
-import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
+import { fingerprintCircuitBreaker, CircuitBreakerOpenError } from "../lib/circuitBreaker";
 
 export const fingerprintRouter = Router();
+let inFlightFingerprintRequests = 0;
+
+export async function drainFingerprintRequests(timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  while (inFlightFingerprintRequests > 0 && Date.now() - start <= timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function trackFingerprintRequest(_req: Request, res: Response, next: NextFunction): void {
+  inFlightFingerprintRequests += 1;
+  let finished = false;
+  const cleanup = () => {
+    if (!finished) {
+      finished = true;
+      inFlightFingerprintRequests = Math.max(0, inFlightFingerprintRequests - 1);
+    }
+  };
+  res.once("finish", cleanup);
+  res.once("close", cleanup);
+  next();
+}
+
+fingerprintRouter.use(trackFingerprintRequest);
 
 /**
- * GET /
- *
- * Computes and returns the request fingerprint along with the correlation
- * ID so callers can verify their fingerprint and correlate it with
- * distributed traces.
+ * Downstream service simulation / call handler
  */
-fingerprintRouter.get(
-  "/",
-  (req: Request, res: Response, next: NextFunction): void => {
-    const correlationId = getCorrelationId() ?? "unknown";
-    const reqId = getRequestId() ?? "unknown";
+async function callDownstreamFingerprintService(_data: unknown): Promise<{
+  fingerprintId: string;
+  verified: boolean;
+}> {
+  // Simulates downstream API interaction
+  return { fingerprintId: 'fp_' + Date.now(), verified: true };
+}
 
-    try {
-      const inputs = buildFingerprintInputs(req);
-      const fingerprint = computeFingerprint(inputs);
+/**
+ * POST /api/fingerprint
+ */
+fingerprintRouter.post("/", async (req: Request, res: Response) => {
+  const correlationId = (req.headers['x-correlation-id'] as string) || `req-${Date.now()}`;
 
-      logger.info(
-        {
-          reqId,
+  try {
+    const result = await fingerprintCircuitBreaker.execute(() =>
+      callDownstreamFingerprintService(req.body)
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+      correlationId,
+    });
+  } catch (error: unknown) {
+    const statusCode = error instanceof Error && "statusCode" in error
+      ? (error as Error & { statusCode?: number }).statusCode
+      : undefined;
+    if (error instanceof CircuitBreakerOpenError || statusCode === 503) {
+      return res.status(503).json({
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Downstream fingerprint service is currently unavailable. Circuit breaker open.',
           correlationId,
-          fingerprint,
-          method: inputs.method,
-          path: inputs.path,
         },
-        "fingerprint_route_accessed",
-      );
-
-      res.status(200).json({
-        fingerprint,
-        correlationId,
-        method: inputs.method,
-        path: inputs.path,
-        computedAt: new Date().toISOString(),
       });
-    } catch (err) {
-      logger.error(
-        { reqId, correlationId, err },
-        "fingerprint_route_error",
-      );
-      next(err);
     }
-  },
-);
+
+    return res.status(500).json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: error instanceof Error ? error.message : 'An unexpected error occurred.',
+        correlationId,
+      },
+    });
+  }
+});
+
+export default fingerprintRouter;

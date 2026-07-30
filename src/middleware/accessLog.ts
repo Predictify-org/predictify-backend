@@ -25,7 +25,8 @@
  * `auth_access_log`, `/api/predictions` => `predictions_access_log`,
  * `/api/markets` => `markets_access_log`, `/api/tags` =>
  * `tags_access_log`, `/api/feature-flags` => `feature_flags_access_log`,
- * and `/api/referrals` => `referrals_access_log`.
+ * `/api/referrals` => `referrals_access_log`, and `/api/admin` =>
+ * `admin_access_log`.
  *
  * Usage
  * -----
@@ -99,7 +100,8 @@ function resolveIp(req: Request): string {
  *
  * Stamps `res.locals.correlationId` and hooks `res.on("finish")` to emit
  * a `users_access_log`, `auth_access_log`, `predictions_access_log`,
- * `markets_access_log`, `tags_access_log`, or `referrals_access_log` log entry once the response
+ * `markets_access_log`, `tags_access_log`, `referrals_access_log`, or
+ * `admin_access_log` log entry once the response
  * has been flushed.
  * Always calls `next()` so it is safe to mount as the first middleware on
  * any router without affecting the handler chain.
@@ -134,12 +136,20 @@ export function accessLog(req: Request, res: Response, next: NextFunction): void
       logName = "tags_access_log";
     } else if (req.originalUrl.startsWith("/api/referrals")) {
       logName = "referrals_access_log";
+    } else if (req.originalUrl.startsWith("/api/admin")) {
+      logName = "admin_access_log";
     }
 
     const durationMs = Date.now() - startMs;
     const contentLength = res.getHeader("Content-Length") as string | undefined;
     const size = contentLength ? parseInt(contentLength, 10) : 0;
-    const actor = (req as Request & { user?: { id: string } }).user?.id ?? "anonymous";
+    // Actor resolution priority:
+    //   1. req.adminAddress (set by requireAdmin middleware for admin routes)
+    //   2. req.user.id (set by requireAuth middleware for user-facing routes)
+    //   3. "anonymous" fallback
+    const adminAddress = (req as Request & { adminAddress?: string }).adminAddress;
+    const userId = (req as Request & { user?: { id: string } }).user?.id;
+    const actor = adminAddress ?? userId ?? "anonymous";
 
     logger.info(
       {

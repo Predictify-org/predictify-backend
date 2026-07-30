@@ -11,7 +11,7 @@ import {
   notificationChannels,
   patchNotificationPreferences,
 } from "../services/notificationPrefs";
-import { markNotificationsAsRead } from "../services/notificationService";
+import { listNotifications, markNotificationsAsRead } from "../services/notificationService";
 import { idempotency } from "../middleware/idempotency";
 import { RouteErrorFactory } from "../errors";
 import { notificationsCors } from "../middleware/cors";
@@ -58,6 +58,76 @@ export const notificationsRouter = Router();
 notificationsRouter.use(notificationsCors());
 notificationsRouter.use(requireAuth);
 notificationsRouter.use(notificationsMetricsMiddleware);
+
+/**
+ * GET /api/notifications
+ *
+ * Returns the authenticated user's notifications, newest first.
+ *
+ * Query parameters:
+ *   limit  — integer 1–100 (default 20)
+ *   cursor — opaque page token returned as `nextCursor` from a prior call
+ *
+ * Response:
+ *   200 { data: NotificationItem[], nextCursor: string | null, correlationId: string }
+ *   400 { error: { code: "validation_error", details: [...] } }
+ *
+ * Ordering: DESC by (created_at, id) — stable under concurrent writes.
+ * Cursor encodes the last row of the previous page; an invalid or tampered
+ * cursor is silently ignored and restarts from the first page.
+ */
+const listQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z.string().min(1).optional(),
+  })
+  .strict();
+
+notificationsRouter.get(
+  "/",
+  async (req: Request, res, next) => {
+    try {
+      const parsed = listQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        logger.warn(
+          {
+            reqId: (req as Request & { id?: string }).id,
+            issues: parsed.error.issues,
+          },
+          "notifications_list_validation_failed",
+        );
+        return res.status(400).json({
+          error: {
+            code: "validation_error",
+            details: parsed.error.issues,
+          },
+        });
+      }
+
+      const userId = (req as Request & { user: { id: string } }).user.id;
+      const { cursor, limit } = parsed.data;
+
+      const page = await listNotifications({ userId, cursor, limit });
+
+      logger.info(
+        {
+          reqId: (req as Request & { id?: string }).id,
+          userId,
+          returned: page.data.length,
+          hasMore: page.nextCursor !== null,
+        },
+        "notifications_listed",
+      );
+
+      return res.status(200).json({
+        data: page.data,
+        nextCursor: page.nextCursor,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 notificationsRouter.get(
   "/preferences",

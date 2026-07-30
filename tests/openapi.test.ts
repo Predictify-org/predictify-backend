@@ -29,6 +29,7 @@ describe("OpenAPI spec generation", () => {
     expect(paths).toContain("/api/auth/refresh");
     expect(paths).toContain("/api/auth/logout");
     expect(paths).toContain("/api/markets");
+    expect(paths).toContain("/api/admin");
     expect(paths).toContain("/api/markets/search");
     expect(paths).toContain("/api/markets/{id}");
     expect(paths).toContain("/api/leaderboard");
@@ -90,10 +91,13 @@ describe("OpenAPI spec generation", () => {
 
   it("marks admin feature routes with bearerAuth", () => {
     const paths = spec.paths ?? {};
+    const adminIndex = (paths["/api/admin"] as Record<string, unknown>)
+      ?.get as Record<string, unknown>;
     const post = (paths["/api/admin/markets/{id}/feature"] as Record<string, unknown>)
       ?.post as Record<string, unknown>;
     const del = (paths["/api/admin/markets/{id}/feature"] as Record<string, unknown>)
       ?.delete as Record<string, unknown>;
+    expect(adminIndex?.security).toEqual([{ bearerAuth: [] }]);
     expect(post?.security).toEqual([{ bearerAuth: [] }]);
     expect(del?.security).toEqual([{ bearerAuth: [] }]);
   });

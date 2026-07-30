@@ -19,6 +19,7 @@
 import { Router } from "express";
 import { getPredictionCount } from "../../services/predictionCountService";
 import { NotFoundError } from "../../errors";
+import { conditionalGet } from "../../middleware/etag";
 import { logger } from "../../config/logger";
 import { getRequestId } from "../../lib/requestContext";
 
@@ -44,13 +45,18 @@ predictionCountRouter.get("/", async (req, res, next) => {
     logger.debug({ reqId, marketId }, "prediction_count_request");
 
     const result = await getPredictionCount(marketId);
+    const payload = { data: result };
+
+    if (conditionalGet(payload, req, res)) {
+      return;
+    }
 
     logger.info(
       { reqId, marketId, count: result.count, cached: result.cached },
       "prediction_count_success",
     );
 
-    return res.status(200).json({ data: result });
+    return res.status(200).json(payload);
   } catch (err) {
     if (err instanceof NotFoundError) {
       logger.warn({ reqId, marketId }, "prediction_count_not_found");

@@ -31,10 +31,11 @@ import {
   getCircuitBreaker,
 } from "../src/lib/circuitBreaker";
 import { errorHandler } from "../src/middleware/errorHandler";
-import { signAccessToken } from "../src/services/jwtService";
+import { signAccessToken, verifyAccessToken } from "../src/services/jwtService";
 import { createAuditLog } from "../src/services/auditService";
 
 const mockSignAccessToken = signAccessToken as jest.MockedFunction<typeof signAccessToken>;
+const mockVerifyAccessToken = verifyAccessToken as jest.MockedFunction<typeof verifyAccessToken>;
 const mockCreateAuditLog = createAuditLog as jest.MockedFunction<typeof createAuditLog>;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,11 @@ beforeEach(() => {
   resetCircuitBreakersForTests();
   mockSignAccessToken.mockReturnValue("mocked-token-xyz");
   mockCreateAuditLog.mockResolvedValue("corr-id-123");
+  mockVerifyAccessToken.mockImplementation((token: string) => {
+    const decoded = jwt.decode(token) as any;
+    if (!decoded) throw new Error("invalid token");
+    return decoded;
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -117,6 +123,8 @@ describe("CLOSED state — normal operation", () => {
       expect.objectContaining({
         action: "admin.impersonate",
         walletAddress: ADMIN_ADDRESS,
+        beforeState: null,
+        afterState: { targetAddress: USER_ADDRESS, role: "user" },
       }),
     );
   });
@@ -173,6 +181,33 @@ describe("OPEN state — fast-fail 503", () => {
     expect(res.body.error.retryAfterMs).toBeGreaterThan(0);
   });
 
+  it("503 response sets a Retry-After header in seconds", async () => {
+    const app = makeApp({ halfOpenAfterMs: 30_000 });
+    forceCircuitStateForTests(IMPERSONATE_CIRCUIT_NAME, "OPEN", { halfOpenAfterMs: 30_000 });
+
+    const res = await authReq(app);
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("30");
+  });
+
+  it("retryAfterMs counts down the remaining wait, not the full window", async () => {
+    jest.useFakeTimers();
+    try {
+      const app = makeApp({ halfOpenAfterMs: 30_000 });
+      forceCircuitStateForTests(IMPERSONATE_CIRCUIT_NAME, "OPEN", { halfOpenAfterMs: 30_000 });
+
+      // Burn 10s of the 30s window; 20s should remain.
+      jest.advanceTimersByTime(10_000);
+
+      const res = await authReq(app);
+      expect(res.status).toBe(503);
+      expect(res.body.error.retryAfterMs).toBeLessThanOrEqual(20_000);
+      expect(res.body.error.retryAfterMs).toBeGreaterThan(15_000);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("does NOT call signAccessToken when circuit is OPEN", async () => {
     const app = makeApp();
     forceCircuitStateForTests(IMPERSONATE_CIRCUIT_NAME, "OPEN");
@@ -221,7 +256,7 @@ describe("OPEN state — fast-fail 503", () => {
 
 describe("HALF_OPEN state — probe behaviour", () => {
   it("lets a probe through when in HALF_OPEN and resets to CLOSED on success", async () => {
-    const app = makeApp({ halfOpenAfterMs: 0 }); // instant transition for tests
+    const app = makeApp({ halfOpenAfterMs: 30_000 });
     forceCircuitStateForTests(IMPERSONATE_CIRCUIT_NAME, "HALF_OPEN");
 
     // The probe call should succeed → breaker returns to CLOSED
@@ -233,7 +268,11 @@ describe("HALF_OPEN state — probe behaviour", () => {
   });
 
   it("trips back to OPEN when the HALF_OPEN probe fails", async () => {
-    const app = makeApp({ halfOpenAfterMs: 0 });
+    // A non-zero half-open window is required for the assertion below to mean
+    // anything: with halfOpenAfterMs = 0 the breaker is immediately eligible
+    // to probe again, so reading the state back would report HALF_OPEN even
+    // though the probe correctly tripped it to OPEN.
+    const app = makeApp({ halfOpenAfterMs: 30_000 });
     forceCircuitStateForTests(IMPERSONATE_CIRCUIT_NAME, "HALF_OPEN");
 
     mockSignAccessToken.mockImplementationOnce(() => {

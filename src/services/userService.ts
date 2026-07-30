@@ -1,6 +1,6 @@
 import { db } from "../db/client";
-import { users, predictions } from "../db/schema";
-import { and, eq, desc, count } from "drizzle-orm";
+import { users, predictions, markets, claims } from "../db/schema";
+import { and, eq, desc, lt, count, or } from "drizzle-orm";
 import { Result, ok, err } from "../errors/RouteError";
 import { encodeCursor, decodeCursor, clampLimit, DEFAULT_PAGE_SIZE } from "../utils/cursor";
 
@@ -28,6 +28,22 @@ export interface PredictionEntry {
   createdAt: string;
 }
 
+export interface CurrentUserProfile {
+  stellarAddress: string;
+  createdAt: string;
+  totals: {
+    prediction_count: number;
+    claim_count: number;
+  };
+}
+
+export interface ProfileTotals {
+  totalPredictions: number;
+  totalAmountStaked: string;
+  wins: number;
+  losses: number;
+}
+
 export interface UserProfile {
   id: string;
   stellarAddress: string;
@@ -36,16 +52,15 @@ export interface UserProfile {
   totals: ProfileTotals;
 }
 
-export interface CurrentUserProfile {
-  id?: string;
-  stellarAddress: string;
-  createdAt: string;
-  predictions?: PredictionEntry[];
-  totals: ProfileTotals;
-}
-
 // ── Service functions ─────────────────────────────────────────────────────
 
+/**
+ * Look up a public user profile by Stellar address.
+ *
+ * Returns `null` when no user with that address exists.
+ *
+ * @param stellarAddress - The Stellar account address to look up.
+ */
 export async function getUserProfile(
   stellarAddress: string,
 ): Promise<UserProfile | null> {
@@ -55,7 +70,7 @@ export async function getUserProfile(
 
 /**
  * Returns the authenticated user's profile (stellarAddress, createdAt) along
- * with aggregate counts of their predictions. Two queries run
+ * with aggregate counts of their predictions.  Two queries run
  * in parallel via Promise.all:
  */
 export async function getCurrentUserProfile(userId: string): Promise<Result<CurrentUserProfile>> {
@@ -90,13 +105,8 @@ export async function getCurrentUserProfile(userId: string): Promise<Result<Curr
     id: user.id,
     stellarAddress: user.stellarAddress,
     createdAt: user.createdAt.toISOString(),
-    predictions: [],
     totals: {
-      totalPredictions: prediction_count,
-      totalAmountStaked: "0",
-      wins: 0,
-      losses: 0,
-      prediction_count: totalPredictions,
+      prediction_count,
       claim_count: 0,
     },
   });
@@ -151,29 +161,20 @@ export async function getUserPredictions(
 ): Promise<Page<UserPredictionRow>> {
   const { status, limit, cursor } = opts;
 
-  // Base conditions — always scope to this user.
-  const baseConditions = [eq(predictions.userId, userId)];
+  const whereConditions = [eq(predictions.userId, userId)];
 
   if (status) {
     baseConditions.push(eq(predictions.status, status));
   }
 
-  // Decode the opaque cursor.  An invalid or version-mismatched token is
-  // treated as absent so a tampered ?cursor= value never causes a 500.
-  const cursorKey = decodeCursor(cursor);
+  if (cursor) {
+    const [cursorTime, cursorId] = cursor.split("|");
+    const cursorCreatedAt = new Date(cursorTime);
 
-  if (cursorKey) {
-    const cursorTime = new Date(cursorKey.sortValue);
-    // Standard two-column keyset predicate for DESC (createdAt, id) ordering:
-    //   rows where createdAt is strictly earlier, OR same timestamp with a
-    //   lexicographically smaller UUID (which is also numerically earlier).
-    baseConditions.push(
+    whereConditions.push(
       or(
-        lt(predictions.createdAt, cursorTime),
-        and(
-          eq(predictions.createdAt, cursorTime),
-          lt(predictions.id, cursorKey.id),
-        ),
+        lt(predictions.createdAt, cursorCreatedAt),
+        and(eq(predictions.createdAt, cursorCreatedAt), lt(predictions.id, cursorId)),
       )!,
     );
   }
@@ -232,6 +233,11 @@ export interface UserListRow {
 /**
  * Return a cursor-paginated list of all users, sorted DESC by (createdAt, id)
  * for stable ordering even when two users share the same timestamp.
+ *
+ * This query is served by the `users_created_at_id_idx` composite index
+ * (migration 0025_users_filter_idx), which switches the planner from a
+ * sequential scan + quicksort (O(n)) to an Index Scan Backward (O(log n +
+ * limit)), eliminating the sort node entirely.
  *
  * Cursor format: opaque base64url token encoding `{ sortValue: createdAt ISO,
  * id }` via the shared `encodeCursor` / `decodeCursor` helpers in

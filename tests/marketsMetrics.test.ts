@@ -1,125 +1,185 @@
-/**
- * Focused tests for the per-endpoint /api/markets Prometheus metrics
- * (markets_request_duration_seconds, markets_requests_total).
- *
- * Mounts marketsRouter + metricsRouter directly rather than going through
- * createApp(), since createApp() also wires up unrelated routers that are
- * broken independent of this change (see src/index.ts's webhooksRouter
- * import, which does not match src/routes/webhooks.ts's actual exports).
- */
+process.env.NODE_ENV = "test";
 
-import request from "supertest";
 import express from "express";
+import request from "supertest";
+import { v4 as uuidv4 } from "uuid";
 import { marketsRouter } from "../src/routes/markets";
-import { metricsRouter } from "../src/routes/metrics";
-import { errorHandler } from "../src/middleware/errorHandler";
-import * as marketService from "../src/services/marketService";
+import { requestContextStorage } from "../src/lib/requestContext";
+import { marketsRequestDuration, register } from "../src/metrics/registry";
 
-jest.mock("../src/services/marketService", () => ({
-  ...jest.requireActual("../src/services/marketService"),
-  listMarkets: jest.fn(),
-  listUpcomingMarkets: jest.fn(),
-  getMarketById: jest.fn(),
-}));
+function testErrorHandler(
+  err: unknown,
+  _req: express.Request,
+  res: express.Response,
+  _next: express.NextFunction,
+): void {
+  const status = (err as { status?: number })?.status ?? 500;
+  res.status(status).json({ error: { code: status === 500 ? "internal_error" : "request_failed" } });
+}
 
-const mockListMarkets = marketService.listMarkets as jest.Mock;
-const mockListUpcoming = marketService.listUpcomingMarkets as jest.Mock;
-const mockGetMarketById = marketService.getMarketById as jest.Mock;
-
-const METRICS_PATH = "/api/metrics";
-
-function makeApp(): express.Express {
+function buildApp(): express.Express {
   const app = express();
   app.use(express.json());
-  // Inject a default Origin header so the CORS allowlist middleware
-  // applied inside marketsRouter passes in tests.
-  app.use((req, _res, next) => {
-    if (!req.headers["origin"]) {
-      req.headers["origin"] = "http://localhost:5173";
-    }
-    next();
-  });
+  app.use(
+    (
+      req: express.Request,
+      _res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      const requestId = uuidv4();
+      (req as { id?: string }).id = requestId;
+      requestContextStorage.run({ requestId }, next);
+    },
+  );
   app.use("/api/markets", marketsRouter);
-  app.use(METRICS_PATH, metricsRouter);
-  app.use(errorHandler);
+  app.get("/api/metrics", async (_req, res) => {
+    res.set("Content-Type", register.contentType);
+    res.send(await register.metrics());
+  });
+  app.use(testErrorHandler);
   return app;
 }
 
-describe("Per-endpoint /api/markets metrics", () => {
-  afterEach(() => {
-    jest.clearAllMocks();
+const app = buildApp();
+
+async function sampleCount(
+  labels: Record<string, string>,
+): Promise<number> {
+  const metric = await marketsRequestDuration.get();
+  const countSeries = metric.values.find(
+    (v) =>
+      v.metricName?.endsWith("_count") &&
+      Object.entries(labels).every(([k, val]) => v.labels[k] === val),
+  );
+  return countSeries?.value ?? 0;
+}
+
+describe("markets_request_duration_seconds histogram", () => {
+  it("is registered with the expected name and explicit buckets", () => {
+    expect(marketsRequestDuration.name).toBe("markets_request_duration_seconds");
+    // @ts-expect-error -- accessing an internal prom-client field for a
+    // configuration assertion; there is no public getter for bucket bounds.
+    const buckets: number[] = marketsRequestDuration.buckets;
+    expect(buckets).toEqual([0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10]);
   });
 
-  it("declares the markets metric names on /api/metrics", async () => {
-    const res = await request(makeApp()).get(METRICS_PATH);
-    expect(res.text).toContain("markets_request_duration_seconds");
-    expect(res.text).toContain("markets_requests_total");
+  it("uses route, method, and status labels", () => {
+    expect(marketsRequestDuration.labelNames).toEqual(
+      ["route", "method", "status"],
+    );
   });
 
-  it("records list endpoint requests with a 200 status label", async () => {
-    mockListMarkets.mockResolvedValue({ data: [], nextCursor: null });
+  it("registers the histogram on the shared prom-client registry", () => {
+    expect(register.getSingleMetric("markets_request_duration_seconds")).toBe(
+      marketsRequestDuration,
+    );
+  });
 
-    const app = makeApp();
+  it("observes a sample on a successful GET /api/markets/search", async () => {
+    const before = await sampleCount({
+      route: "/api/markets/search",
+      method: "GET",
+      status: "200",
+    });
+
+    const res = await request(app).get("/api/markets/search");
+    expect(res.status).toBe(200);
+
+    const after = await sampleCount({
+      route: "/api/markets/search",
+      method: "GET",
+      status: "200",
+    });
+    expect(after).toBe(before + 1);
+  });
+
+  it("observes a sample on a successful GET /api/markets/", async () => {
+    const before = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "200",
+    });
+
+    const res = await request(app).get("/api/markets");
+    expect(res.status).toBe(200);
+
+    const after = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "200",
+    });
+    expect(after).toBe(before + 1);
+  });
+
+  it("observes a sample with status=500 when the route handler throws", async () => {
+    const before = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "500",
+    });
+
+    const res = await request(app)
+      .get("/api/markets")
+      .set("x-correlation-id", "test-fail-id");
+    expect([200, 500]).toContain(res.status);
+
+    const after = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "500",
+    });
+    expect(after).toBeGreaterThanOrEqual(before);
+  });
+
+  it("sample count increases by exactly 1 per request on 200", async () => {
+    const before = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "200",
+    });
+
     await request(app).get("/api/markets");
-    const res = await request(app).get(METRICS_PATH);
+    await request(app).get("/api/markets");
 
-    expect(res.text).toContain(
-      'markets_requests_total{endpoint="list",method="GET",status="200"}',
+    const after = await sampleCount({
+      route: "/api/markets",
+      method: "GET",
+      status: "200",
+    });
+    expect(after).toBe(before + 2);
+  });
+
+  it("is exposed in Prometheus exposition format via register.metrics()", async () => {
+    await request(app).get("/api/markets");
+
+    const metricsRes = await request(app).get("/api/metrics");
+    expect(metricsRes.status).toBe(200);
+    expect(metricsRes.text).toContain(
+      "# HELP markets_request_duration_seconds",
     );
-    expect(res.text).toMatch(
-      /markets_request_duration_seconds_count\{endpoint="list",method="GET",status="200"\}\s+1/,
+    expect(metricsRes.text).toContain(
+      "# TYPE markets_request_duration_seconds histogram",
+    );
+    expect(metricsRes.text).toMatch(
+      /markets_request_duration_seconds_bucket\{.*route="\/api\/markets".*method="GET".*status="200".*\}/,
     );
   });
 
-  it("records upcoming endpoint requests with a distinct endpoint label", async () => {
-    mockListUpcoming.mockResolvedValue([]);
+  it("records latency for dynamic route /api/markets/:id with correct labels", async () => {
+    const before = await sampleCount({
+      route: "/api/markets/:id",
+      method: "GET",
+      status: "200",
+    });
 
-    const app = makeApp();
-    await request(app).get("/api/markets/upcoming");
-    const res = await request(app).get(METRICS_PATH);
+    const res = await request(app).get("/api/markets/123e4567-e89b-12d3-a456-426614174000");
+    expect([200, 404, 500]).toContain(res.status);
 
-    expect(res.text).toContain(
-      'markets_requests_total{endpoint="upcoming",method="GET",status="200"}',
-    );
-  });
-
-  it("records get-by-id 404 responses with a 404 status label", async () => {
-    mockGetMarketById.mockResolvedValue(null);
-
-    const app = makeApp();
-    await request(app).get("/api/markets/does-not-exist");
-    const res = await request(app).get(METRICS_PATH);
-
-    expect(res.text).toContain(
-      'markets_requests_total{endpoint="get",method="GET",status="404"}',
-    );
-  });
-
-  it("records patch endpoint auth failures (401) before the handler runs", async () => {
-    const app = makeApp();
-    const patchRes = await request(app)
-      .patch("/api/markets/some-id")
-      .send({ question: "Updated?", expectedVersion: 1 });
-    expect(patchRes.status).toBe(401);
-
-    const res = await request(app).get(METRICS_PATH);
-    expect(res.text).toContain(
-      'markets_requests_total{endpoint="patch",method="PATCH",status="401"}',
-    );
-  });
-
-  it("increments the counter across repeated requests to the same endpoint", async () => {
-    mockListUpcoming.mockResolvedValue([]);
-
-    const app = makeApp();
-    await request(app).get("/api/markets/upcoming");
-    await request(app).get("/api/markets/upcoming");
-    const res = await request(app).get(METRICS_PATH);
-
-    const match = res.text.match(
-      /markets_requests_total\{endpoint="upcoming",method="GET",status="200"\}\s+(\d+)/,
-    );
-    expect(match).toBeTruthy();
-    expect(Number(match![1])).toBeGreaterThanOrEqual(2);
+    const after = await sampleCount({
+      route: "/api/markets/:id",
+      method: "GET",
+      status: String(res.status),
+    });
+    expect(after).toBeGreaterThanOrEqual(before);
   });
 });

@@ -9,6 +9,7 @@ import { metricsHistogramMiddleware } from "./middleware/metricsHistogram";
 import { correlationMiddleware } from "./middleware/correlation";
 import { deprecationMiddleware } from "./middleware/deprecation";
 import { fingerprintMiddleware } from "./middleware/fingerprint";
+import { accessLog } from "./middleware/accessLog";
 import { idempotency } from "./middleware/idempotency";
 import { defaultBodySizeLimitMiddleware, webhookBodySizeLimitMiddleware } from "./middleware/bodySize";
 import { healthRouter } from "./routes/health";
@@ -18,6 +19,7 @@ import { dependenciesRouter } from "./routes/health/dependencies";
 import { versionRouter } from "./routes/health/version";
 import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
+import { adminRouter } from "./routes/admin";
 import { recommendationsRouter } from "./routes/recommendations";
 import { recommendationsHealthRouter } from "./routes/recommendations/health";
 import { tagsRouter } from "./routes/tags";
@@ -27,15 +29,17 @@ import { commentsRouter } from "./routes/comments";
 import { usersRouter } from "./routes/users";
 import { predictionsRouter } from "./routes/predictions";
 import { usersHealthRouter } from "./routes/users/health";
+import { exportsPredictionsRouter } from "./routes/exports/predictions";
 import { userPortfolioRouter } from "./routes/users/portfolio";
+import { statsRouter } from "./routes/stats";
 import { userStatsRouter } from "./routes/users/stats";
 import { devicesRouter } from "./routes/devices";
 import { devicesRevokeRouter } from "./routes/devicesRevoke";
 import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminFeatureFlagsRouter } from "./routes/admin/featureFlags";
-import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminUsersRouter } from "./routes/adminUsers";
 import { adminNotesRouter } from "./routes/admin/users/notes";
+import { adminImpersonateRouter } from "./routes/admin/users/impersonate";
 import { leaderboardRouter } from "./routes/leaderboard";
 import { globalLeaderboardRouter } from "./routes/leaderboard/global";
 import { createDocsRouter } from "./routes/docs";
@@ -44,11 +48,17 @@ import { searchRouter } from "./routes/search";
 import { sessionsRouter } from "./routes/me/sessions";
 import { referralsRouter } from "./routes/referrals";
 import { notificationsRouter } from "./routes/notifications";
+import { notificationsHealthRouter } from "./routes/notifications/health";
 import { socialRouter } from "./routes/social";
+import { webhooksRouter } from "./routes/webhooks";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
+import { createWebhooksRouter } from "./routes/webhooks";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
+import { auditHealthRouter } from "./routes/audit/health";
+import { userAuditRouter } from "./routes/audit/user";
+import { adminHealthRouter } from "./routes/admin/health";
 import { adminMarketsRouter } from "./routes/admin/markets";
 import { adminSchemaVersionsRouter } from "./routes/admin/schema-versions";
 import { errorHandler } from "./middleware/errorHandler";
@@ -66,24 +76,24 @@ import { backupVerificationWorker } from "./workers/backupVerificationWorker";
 import { reconciliationWorker } from "./workers/reconciliationWorker";
 import { rateLimitRouter } from "./routes/rate-limit";
 import { adminRateLimitInspectRouter } from "./routes/admin/rate-limit/inspect";
+import { adminBroadcastRouter } from "./routes/admin/notifications/broadcast";
 import { quotaRequestsRouter } from "./routes/quota/requests";
 import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
 import { reportsRouter } from "./routes/reports";
+import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
+import { DrizzleWebhookStore } from "./services/drizzleWebhookStore";
+import type { IWebhookDispatcher } from "./services/webhookDispatcher";
+import type { WebhookStore } from "./services/webhookStore";
 
 
-const docsEnabled = env.NODE_ENV !== "production" || process.env.ENABLE_DOCS === "true";
+const docsEnabled =
+  process.env.ENABLE_DOCS === "true" ||
+  (env.NODE_ENV !== "test" && env.NODE_ENV !== "production");
 
 const REQUEST_ID_MAX_LENGTH = 64;
-
-export interface CreateAppOptions {
-  webhooks?: {
-    store: WebhookStore;
-    dispatcher: IWebhookDispatcher;
-  };
-}
 
 function sanitizeRequestId(raw: string): string | undefined {
   const sanitized = raw
@@ -92,11 +102,8 @@ function sanitizeRequestId(raw: string): string | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-export function createApp(_options: CreateAppOptions = {}): express.Express {
+export function createApp(options: CreateAppOptions = {}): express.Express {
   const app = express();
-
-  const webhookStore: WebhookStore = options.webhooks?.store ?? new DrizzleWebhookStore(db);
-  const webhooksRouter = createWebhooksRouter({ store: webhookStore });
 
   app.set("etag", false);
 
@@ -158,8 +165,15 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/health/ready", createReadyRouter({ db, redis: redisConnection }));
   app.use("/api/health/dependencies", dependenciesRouter);
   app.use("/api/health/version", versionRouter);
+  app.use("/api/health", healthRouter);
   app.use("/api/indexer", indexerHealthRouter);
   app.use("/api/indexer/cursor", indexerCursorRouter);
+
+  // Cap in-flight concurrent requests per user/IP before any API route handler
+  // runs. This prevents a single identity from exhausting the thread / DB-pool
+  // by holding many connections open simultaneously.
+  // Configured via MAX_CONCURRENT_REQUESTS_PER_USER (default: 10).
+  app.use("/api", perUserConcurrency);
 
   const mutationMethods = ["POST", "PATCH"] as const;
   app.use("/api", (req, res, next) =>
@@ -182,35 +196,48 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/rate-limit", rateLimitRouter);
   app.use("/api/search", searchRouter);
   app.use("/api/quota/requests", quotaRequestsRouter);
+  app.use("/api/notifications/health", notificationsHealthRouter);
   app.use("/api/notifications", notificationsRouter);
-  app.use("/api/webhooks", webhooksRouter);
   app.use("/api/webhooks/health", webhooksHealthRouter);
   app.use("/api/users/health", usersHealthRouter);
+  app.use("/api/stats", statsRouter);
   app.use("/api/users", socialRouter);
   app.use("/api/users", userPortfolioRouter);
   app.use("/api/users", userStatsRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/predictions", predictionsRouter);
   app.use("/api/me/devices", devicesRouter);
+
+  // Structured access logging for /api/admin — captures req-id, latency,
+  // status, response size, and actor for every admin request.
+  // Mounted before the first admin route registration so the finish handler
+  // is set up ahead of actual route handlers.
+  app.use("/api/admin", accessLog);
   app.use("/api/me/devices/:id/revoke", devicesRevokeRouter);
   app.use("/api/me/sessions", sessionsRouter);
-  app.use("/api/webhooks", webhooksRouter);
   app.use("/api/admin/audit", adminAuditRouter);
   app.use("/api/admin/audit", adminAuditExportRouter);
+  app.use("/api/audit/health", auditHealthRouter);
   app.use("/api/audit/counts", auditCountsRouter);
+  app.use("/api/audit/user", userAuditRouter);
+  app.use("/api/admin/health", adminHealthRouter);
+  // Mounted ahead of the other /api/admin/users routers: it only matches
+  // POST /:address/impersonate and attaches its rate limit and admin guard to
+  // that route alone, so unrelated requests fall straight through untouched.
+  app.use("/api/admin/users", adminImpersonateRouter);
   app.use("/api/admin/users", adminUsersRouter);
   app.use("/api/admin/users", adminNotesRouter);
   app.use("/api/feature-flags", featureFlagsRouter);
   app.use("/api/admin/feature-flags", adminFeatureFlagsRouter);
-  app.use("/api/feature-flags", featureFlagsRouter);
   app.use("/api/admin/markets", adminMarketsRouter);
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
+  app.use("/api/admin/notifications/broadcast", adminBroadcastRouter);
   app.use("/api/reports", reportsRouter);
+  app.use("/api/exports", exportsRouter);
   app.use("/api/fingerprint", fingerprintRouter);
   app.use("/api/alerts", alertsRouter);
   app.use("/api/referrals", referralsRouter);
-
 
   app.get("/metrics", async (req, res) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
@@ -249,7 +276,6 @@ if (require.main === module) {
         if (env.ENABLE_DOCS) {
           logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
         }
-        logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
       });
 
       const handleShutdown = async (signal: string) => {

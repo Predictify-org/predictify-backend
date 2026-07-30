@@ -1,0 +1,89 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`/api/subscriptions response schema stability GET / — matches the stable empty-list shape 1`] = `
+{
+  "data": [],
+}
+`;
+
+exports[`/api/subscriptions response schema stability GET / — matches the stable list shape (secret stripped) 1`] = `
+{
+  "data": [
+    {
+      "active": true,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "events": [
+        "market.created",
+        "prediction.settled",
+      ],
+      "id": "123e4567-e89b-12d3-a456-426614174000",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "url": "https://example.com/webhook",
+    },
+  ],
+}
+`;
+
+exports[`/api/subscriptions response schema stability GET /:id — matches the stable not-found error shape 1`] = `
+{
+  "error": {
+    "code": "not_found",
+    "correlationId": Any<String>,
+    "message": "Subscription not found",
+  },
+}
+`;
+
+exports[`/api/subscriptions response schema stability GET /:id — matches the stable single-resource shape 1`] = `
+{
+  "data": {
+    "active": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "events": [
+      "market.created",
+      "prediction.settled",
+    ],
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "url": "https://example.com/webhook",
+  },
+}
+`;
+
+exports[`/api/subscriptions response schema stability POST / — matches the stable creation shape (secret included once) 1`] = `
+{
+  "data": {
+    "active": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "events": [
+      "market.created",
+      "prediction.settled",
+    ],
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "secret": Any<String>,
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "url": "https://example.com/webhook",
+  },
+}
+`;
+
+exports[`/api/subscriptions response schema stability POST / — matches the stable validation-error shape 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "correlationId": Any<String>,
+    "details": [
+      {
+        "code": "invalid_type",
+        "expected": "string",
+        "message": "url is required",
+        "path": [
+          "url",
+        ],
+        "received": "undefined",
+      },
+    ],
+    "message": "Validation failed",
+  },
+}
+`;

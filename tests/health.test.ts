@@ -8,6 +8,15 @@ import request from "supertest";
 import { createApp } from "../src/index";
 import { db } from "../src/db/client";
 
+// Shorten requestTimeout to 50ms for tests
+jest.mock("../src/middleware/timeout", () => {
+  const actual = jest.requireActual("../src/middleware/timeout");
+  return {
+    ...actual,
+    requestTimeout: (_ms: number, options: any) => actual.requestTimeout(50, options),
+  };
+});
+
 jest.mock("../src/db/client", () => ({
   db: {
     select: jest.fn().mockReturnThis(),
@@ -39,6 +48,18 @@ describe("healthRouter endpoints", () => {
       expect(res.body.status).toBe("ok");
       expect(res.body.state).toEqual({ mode: "active", maintenance: false });
     });
+
+    it("returns 504 on timeout", async () => {
+      // Simulate a long-running DB query
+      const originalLimit = (db.limit as jest.Mock).getMockImplementation();
+      (db.limit as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve([{ afterState: { mode: "active", maintenance: false } }]), 100)));
+
+      const res = await request(createApp()).get("/health");
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe("timeout");
+
+      (db.limit as jest.Mock).mockImplementation(originalLimit);
+    });
   });
 
   describe("POST /health/mutations", () => {
@@ -52,5 +73,21 @@ describe("healthRouter endpoints", () => {
       expect(res.body.state.mode).toBe("maintenance");
       expect(res.body.state.maintenance).toBe(true);
     });
+
+    it("returns 504 on timeout", async () => {
+      // Simulate a long-running DB query
+      const originalLimit = (db.limit as jest.Mock).getMockImplementation();
+      (db.limit as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve([{ afterState: { mode: "active", maintenance: false } }]), 100)));
+
+      const res = await request(createApp())
+        .post("/health/mutations")
+        .send({ mode: "maintenance", maintenance: true });
+
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe("timeout");
+
+      (db.limit as jest.Mock).mockImplementation(originalLimit);
+    });
   });
 });
+

@@ -16,6 +16,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { requireAuth } from "../middleware/requireAuth";
 import { createPerUserTokenBucketLimiter } from "../middleware/rateLimit";
 import { exportsPredictionsRouter } from "./exports/predictions";
+import { env } from "../config/env";
 import { logger } from "../config/logger";
 
 // In-flight request tracking for graceful shutdown drain
@@ -77,8 +78,8 @@ export function createExportsRouter(options: ExportsRouterOptions = {}): Router 
   router.use(requireAuth);
   router.use(
     createPerUserTokenBucketLimiter({
-      capacity: options.rateLimit?.capacity ?? 60,
-      refillWindowMs: options.rateLimit?.refillWindowMs ?? 60 * 1000,
+      capacity: options.rateLimit?.capacity ?? env.EXPORTS_RATE_LIMIT_CAPACITY,
+      refillWindowMs: options.rateLimit?.refillWindowMs ?? env.EXPORTS_RATE_LIMIT_WINDOW_MS,
     }),
   );
 

@@ -13,14 +13,16 @@ export interface AuditLogFilters {
 }
 
 export interface AuditLogItem {
-  id: string;
-  action: string;
-  walletAddress: string | null;
-  ip: string;
-  correlationId: string;
-  rateLimitContext: unknown;
-  createdAt: Date;
-}
+   id: string;
+   action: string;
+   walletAddress: string | null;
+   ip: string;
+   correlationId: string;
+   entityType: string | null;
+   entityId: string | null;
+   rateLimitContext: unknown;
+   createdAt: Date;
+ }
 
 /**
  * Retrieve a paginated list of audit logs matching the given filter criteria.
@@ -120,6 +122,63 @@ export async function* getAuditLogsStream(
   for (const row of rows) {
     yield row as AuditLogItem;
   }
+}
+
+/**
+ * Retrieve a paginated list of audit logs for a specific wallet address.
+ * Uses the same keyset pagination as `getAuditLogs`, but always pins the
+ * `walletAddress` filter so callers cannot omit it.
+ */
+export async function getAuditLogsByUser(
+  walletAddress: string,
+  filters: Omit<AuditLogFilters, "actor">,
+): Promise<Page<AuditLogItem>> {
+  const take = clampLimit(filters.limit);
+  const key = decodeCursor(filters.cursor);
+
+  const cursorPredicate = key
+    ? or(
+        lt(auditLogs.createdAt, new Date(key.sortValue)),
+        and(
+          eq(auditLogs.createdAt, new Date(key.sortValue)),
+          lt(auditLogs.id, key.id),
+        ),
+      )
+    : undefined;
+
+  const conditions = [eq(auditLogs.walletAddress, walletAddress)];
+
+  if (filters.action) {
+    conditions.push(eq(auditLogs.action, filters.action));
+  }
+  if (filters.startDate) {
+    conditions.push(gte(auditLogs.createdAt, filters.startDate));
+  }
+  if (filters.endDate) {
+    conditions.push(lte(auditLogs.createdAt, filters.endDate));
+  }
+  if (cursorPredicate) {
+    conditions.push(cursorPredicate);
+  }
+
+  const rows = await db
+    .select()
+    .from(auditLogs)
+    .where(and(...conditions))
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(take + 1);
+
+  const hasMore = rows.length > take;
+  const data = hasMore ? rows.slice(0, take) : rows;
+  const last = data[data.length - 1];
+
+  return {
+    data: data as AuditLogItem[],
+    nextCursor:
+      hasMore && last
+        ? encodeCursor({ sortValue: last.createdAt.toISOString(), id: last.id })
+        : null,
+  };
 }
 
 export interface AuditActionCount {

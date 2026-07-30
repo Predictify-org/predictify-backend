@@ -32,6 +32,51 @@ export interface RateLimitContext {
   blocked: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Sanitization helpers
+// ---------------------------------------------------------------------------
+
+/** Keys that are stripped / redacted from audit state snapshots. */
+const SENSITIVE_KEYS = new Set([
+  "secret",
+  "password",
+  "token",
+  "authorization",
+  "privatekey",
+  "private_key",
+  "apikey",
+  "api_key",
+]);
+
+/**
+ * Recursively sanitize an object or object part, stripping sensitive keys.
+ *
+ * - Strips any key present in SENSITIVE_KEYS (case-insensitive).
+ * - Preserves JSON structure for nested objects and arrays.
+ *
+ * @param state - any object (may be null/undefined), always returns same type
+ * @returns a copy with sensitive values redacted to "[REDACTED]"
+ */
+export function sanitizeState(
+  state: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null | undefined {
+  if (!state) return state;
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (SENSITIVE_KEYS.has(k.toLowerCase())) {
+      out[k] = "[REDACTED]";
+      continue;
+    }
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = sanitizeState(v as Record<string, unknown>);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 /**
  * Input shape for creating an audit log entry.
  */
@@ -50,6 +95,12 @@ export interface AuditEntryInput {
   beforeState?: Record<string, unknown> | null;
   /** The state after the action took place */
   afterState?: Record<string, unknown> | null;
+  /** Optional metadata for enrichment (e.g., endpoint, error details) */
+  metadata?: Record<string, unknown>;
+  /** Entity type being mutated (e.g. "Subscription", "Market") */
+  entityType?: string;
+  /** Primary key of the entity being mutated */
+  entityId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,14 +120,17 @@ export interface AuditEntryInput {
 export async function createAuditLog(input: AuditEntryInput): Promise<string> {
   const correlationId = input.correlationId ?? uuidv4();
 
-  const entry = {
+const entry = {
     action: input.action,
     walletAddress: input.walletAddress ?? null,
     ip: input.ip,
     correlationId,
+    entityType: input.entityType ?? null,
+    entityId: input.entityId ?? null,
     rateLimitContext: input.rateLimitContext ?? null,
-    beforeState: input.beforeState ?? null,
-    afterState: input.afterState ?? null,
+    beforeState: input.beforeState !== null ? sanitizeState(input.beforeState) : null,
+    afterState: input.afterState !== null ? sanitizeState(input.afterState) : null,
+    metadata: input.metadata ?? null,
   };
 
   try {
@@ -89,9 +143,12 @@ export async function createAuditLog(input: AuditEntryInput): Promise<string> {
         action: entry.action,
         walletAddress: entry.walletAddress,
         ip: entry.ip,
+        entityType: entry.entityType,
+        entityId: entry.entityId,
         rateLimitContext: entry.rateLimitContext,
         beforeState: entry.beforeState,
         afterState: entry.afterState,
+        metadata: entry.metadata,
       },
       "audit_log_created",
     );

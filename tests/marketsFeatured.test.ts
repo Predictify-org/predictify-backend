@@ -25,6 +25,7 @@ jest.mock("../src/services/marketFeatureService", () => ({
 
 import { listFeaturedMarkets } from "../src/services/marketFeatureService";
 import { rateLimitAnon } from "../src/middleware/rateLimitAnon";
+import { conditionalGet } from "../src/middleware/etag";
 import { errorHandler } from "../src/middleware/errorHandler";
 
 const mockListFeatured = listFeaturedMarkets as jest.MockedFunction<typeof listFeaturedMarkets>;
@@ -53,7 +54,13 @@ function makeApp(): express.Express {
         parsedLimit = Math.floor(num);
       }
       const data = await listFeaturedMarkets(parsedLimit);
-      return res.json({ data });
+      const payload = { data };
+
+      if (conditionalGet(payload, req, res)) {
+        return;
+      }
+
+      return res.json(payload);
     } catch (e) {
       return next(e);
     }
@@ -108,5 +115,46 @@ describe("GET /api/markets/featured", () => {
     const res = await request(makeApp()).get("/api/markets/featured");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: [] });
+  });
+
+  // ── ETag / conditional GET ─────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    mockListFeatured.mockResolvedValueOnce([
+      { id: "m1", question: "Q1", status: "active", resolutionOutcome: null, resolutionTime: "2026-07-01T00:00:00.000Z", winningOutcome: null, metadata: null, featuredAt: "2026-06-28T00:00:00.000Z", featuredBy: "GA…" },
+    ]);
+
+    const res = await request(makeApp()).get("/api/markets/featured");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    mockListFeatured.mockResolvedValue([
+      { id: "m1", question: "Q1", status: "active", resolutionOutcome: null, resolutionTime: "2026-07-01T00:00:00.000Z", winningOutcome: null, metadata: null, featuredAt: "2026-06-28T00:00:00.000Z", featuredBy: "GA…" },
+    ]);
+
+    const first = await request(makeApp()).get("/api/markets/featured");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(makeApp())
+      .get("/api/markets/featured")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    mockListFeatured.mockResolvedValue([
+      { id: "m1", question: "Q1", status: "active", resolutionOutcome: null, resolutionTime: "2026-07-01T00:00:00.000Z", winningOutcome: null, metadata: null, featuredAt: "2026-06-28T00:00:00.000Z", featuredBy: "GA…" },
+    ]);
+
+    const res = await request(makeApp())
+      .get("/api/markets/featured")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
   });
 });

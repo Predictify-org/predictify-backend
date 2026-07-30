@@ -82,6 +82,19 @@ describe('GET /feature-flags', () => {
     expect(typeof res.body.next_cursor).toBe('string');
   });
 
+  it('filters flags by enabled state before pagination', async () => {
+    const res = await request(app)
+      .get('/feature-flags')
+      .query({ enabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([
+      { id: 'NEW_MARKET_FLOW', enabled: true, variant: 'v2' },
+    ]);
+    expect(res.body.total).toBe(1);
+    expect(res.body.next_cursor).toBeNull();
+  });
+
   it('should return next_cursor as null on the last page', async () => {
     const first = await request(app)
       .get('/feature-flags')

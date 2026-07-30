@@ -53,6 +53,9 @@ const baseSchema = z.object({
   // ── Notifications CORS ──────────────────────────────────
   NOTIFICATIONS_CORS_ALLOWED_ORIGINS: z.string().default(""),
 
+  // ── Stats CORS ──────────────────────────────────────────
+  STATS_CORS_ALLOWED_ORIGINS: z.string().default(""),
+
   // ── Geo-blocking ──────────────────────────────────────────
   GEO_BLOCKED_COUNTRIES: z.string().default("").transform((val) =>
     val.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -85,6 +88,10 @@ const baseSchema = z.object({
   INVITES_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
   INVITES_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 
+  // ── Exports rate limiting (per user, token bucket) ────────
+  EXPORTS_RATE_LIMIT_CAPACITY: z.coerce.number().int().positive().default(60),
+  EXPORTS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+
   // ── Settle confirmer ──────────────────────────────────────
   SETTLE_CONFIRMER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   SETTLE_CONFIRMER_CONFIRMATION_LEDGERS: z.coerce.number().int().positive().default(2),
@@ -97,9 +104,23 @@ const baseSchema = z.object({
   SLOW_QUERY_ALERTER_LIMIT: z.coerce.number().int().positive().default(10),
   SLOW_QUERY_ALERTER_QUERY_MAX_LENGTH: z.coerce.number().int().positive().default(1000),
 
+  // ── Predictions Confirmer ───────────────────────────────────
+  PREDICTION_CONFIRM_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  PREDICTION_CONFIRM_BATCH_SIZE: z.coerce.number().int().positive().default(1000),
+  PREDICTION_CONFIRM_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+
   // ── Metrics ───────────────────────────────────────────────
   /** Bearer token required to access /api/metrics. Empty string (default) means no auth. */
   METRICS_AUTH_TOKEN: z.string().default(""),
+  // ── CSRF (double-submit cookie) ───────────────────────────
+  /** Name of the CSRF token cookie. Not httpOnly — the client must be able to read it. */
+  CSRF_COOKIE_NAME: z.string().default("csrf_token"),
+  /** Name of the header clients must echo the CSRF token back in. */
+  CSRF_HEADER_NAME: z.string().default("x-csrf-token"),
+  /** Lifetime of an issued CSRF token, in seconds. */
+  CSRF_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
+  /** Name of the session/auth cookie whose presence triggers CSRF enforcement. */
+  SESSION_COOKIE_NAME: z.string().default("session"),
 });
 
 export const envSchema = baseSchema.refine(

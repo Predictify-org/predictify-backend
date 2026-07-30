@@ -47,6 +47,53 @@ describe("GET /api/markets/search", () => {
     expect(res.status).toBe(200);
     expect(res.body.fallback).toBe(true);
   });
+
+  // ── ETag / conditional GET ──────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    jest.spyOn(marketRepo, "searchMarkets").mockResolvedValue({
+      data: [{ id: "m-1", question: "Will Bitcoin hit 100k?" }],
+      total: 1,
+      fallback: false,
+    });
+
+    const res = await request(createApp()).get("/api/markets/search?q=Bitcoin");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    jest.spyOn(marketRepo, "searchMarkets").mockResolvedValue({
+      data: [{ id: "m-1", question: "Will Bitcoin hit 100k?" }],
+      total: 1,
+      fallback: false,
+    });
+
+    const first = await request(createApp()).get("/api/markets/search?q=Bitcoin");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(createApp())
+      .get("/api/markets/search?q=Bitcoin")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    jest.spyOn(marketRepo, "searchMarkets").mockResolvedValue({
+      data: [{ id: "m-1", question: "Will Bitcoin hit 100k?" }],
+      total: 1,
+      fallback: false,
+    });
+
+    const res = await request(createApp())
+      .get("/api/markets/search?q=Bitcoin")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
+  });
 });
 
 describe("searchMarkets repository", () => {

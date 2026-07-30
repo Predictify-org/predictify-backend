@@ -1,10 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
-import { LeaderboardPeriod } from "../../routes/leaderboard";
+import { LeaderboardPeriod } from "../../validators/leaderboard";
 import {
   getLeaderboard,
   getUserLeaderboardEntry,
   getLeaderboardWithRefresh,
+  getLeaderboardPage,
+  getLeaderboardPageWithRefresh,
   refreshLeaderboard,
   LeaderboardEntry,
 } from "../../services/leaderboardService";
@@ -396,6 +398,168 @@ describe("LeaderboardService", () => {
 
       // Should still return results even if cache write fails
       expect(result).toEqual([mockLeaderboardEntry]);
+    });
+  });
+
+  describe("getLeaderboardPage (cursor-based)", () => {
+    const makeEntry = (rank: number, userId: string): LeaderboardEntry => ({
+      ...mockLeaderboardEntry,
+      rank,
+      user_id: userId,
+    });
+
+    const page1 = [makeEntry(1, "u-aaa"), makeEntry(2, "u-bbb"), makeEntry(3, "u-ccc")];
+    const page2 = [makeEntry(4, "u-ddd"), makeEntry(5, "u-eee")];
+
+    it("should return first page with nextCursor when no cursor given", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      // Return limit+1 rows to signal there are more pages
+      (db.execute as any).mockResolvedValueOnce({
+        rows: [...page1, page2[0]],
+      });
+
+      const result = await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(result.entries).toEqual(page1);
+      expect(result.nextCursor).toBeTruthy();
+      expect(result.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    });
+
+    it("should return null nextCursor on the last page", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({
+        rows: page2, // fewer than limit+1 → no more rows
+      });
+
+      const result = await getLeaderboardPage(5, LeaderboardPeriod.ALL_TIME);
+
+      expect(result.entries).toEqual(page2);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it("should use cache for first page when available", async () => {
+      (redis.get as any).mockResolvedValueOnce(JSON.stringify(page1));
+
+      const result = await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(result.entries).toEqual(page1);
+      expect(db.execute).not.toHaveBeenCalled();
+    });
+
+    it("should query DB with cursor WHERE clause when cursor is provided", async () => {
+      (db.execute as any).mockResolvedValueOnce({
+        rows: [...page2, makeEntry(6, "u-fff")],
+      });
+
+      const result = await getLeaderboardPage(2, LeaderboardPeriod.ALL_TIME, "some-cursor");
+
+      expect(result.entries).toEqual(page2);
+      expect(result.nextCursor).toBeTruthy();
+      // Should NOT have checked cache for cursor-based pages
+      expect(redis.get).not.toHaveBeenCalled();
+    });
+
+    it("should use correct view name for monthly period", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({ rows: page1 });
+
+      await getLeaderboardPage(3, LeaderboardPeriod.MONTHLY);
+
+      const sqlCall = (db.execute as any).mock.calls[0][0];
+      expect(sqlCall.toString()).toContain("leaderboard_monthly_mv");
+    });
+
+    it("should cache first page result", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({ rows: page1 });
+
+      await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(redis.setex).toHaveBeenCalledWith(
+        "leaderboard:all-time:3:0",
+        300,
+        expect.any(String),
+      );
+    });
+
+    it("should not cache empty first page", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({ rows: [] });
+
+      await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(redis.setex).not.toHaveBeenCalled();
+    });
+
+    it("should handle invalid cursor by falling back to first page", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({
+        rows: [...page1, page2[0]],
+      });
+
+      const result = await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME, "!!!invalid-base64!!!");
+
+      expect(result.entries).toEqual(page1);
+      // Should have fallen back to first-page query (no WHERE clause)
+      const sqlCall = (db.execute as any).mock.calls[0][0];
+      expect(sqlCall.toString()).not.toContain("WHERE");
+    });
+
+    it("should handle DB errors", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockRejectedValueOnce(new Error("DB error"));
+
+      await expect(
+        getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME),
+      ).rejects.toThrow("DB error");
+    });
+
+    it("should encode cursor with zero-padded rank", async () => {
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({
+        rows: [makeEntry(1, "u-aaa"), makeEntry(2, "u-bbb"), makeEntry(3, "u-ccc"), makeEntry(4, "u-ddd")],
+      });
+
+      const result = await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(result.nextCursor).toBeTruthy();
+      // The cursor should contain the zero-padded rank (3 padded to 10 digits)
+      // We just check it's non-null and valid-looking
+      expect(result.nextCursor!.length).toBeGreaterThan(10);
+    });
+  });
+
+  describe("getLeaderboardPageWithRefresh", () => {
+    const mockEntry: LeaderboardEntry = {
+      ...mockLeaderboardEntry,
+      rank: 1,
+      user_id: "user-123",
+    };
+
+    it("should refresh before returning cursor page", async () => {
+      (redis.keys as any).mockResolvedValueOnce([]);
+      (db.execute as any)
+        .mockResolvedValueOnce(undefined) // refresh
+        .mockResolvedValueOnce({ rows: [mockEntry] }); // query
+      (redis.get as any).mockResolvedValueOnce(null);
+
+      const result = await getLeaderboardPageWithRefresh(3, LeaderboardPeriod.ALL_TIME);
+
+      expect(result.entries).toEqual([mockEntry]);
+      expect(db.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("should pass cursor to getLeaderboardPage", async () => {
+      (redis.keys as any).mockResolvedValueOnce([]);
+      (db.execute as any)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({ rows: [mockEntry] });
+      (redis.get as any).mockResolvedValueOnce(null);
+
+      await getLeaderboardPageWithRefresh(3, LeaderboardPeriod.ALL_TIME, "some-cursor");
+
+      // refresh call + query call
+      expect(db.execute).toHaveBeenCalledTimes(2);
     });
   });
 });

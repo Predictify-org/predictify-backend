@@ -48,6 +48,7 @@
 
 import request from "supertest";
 import { createApp } from "../src/index";
+import { drainFingerprintRequests } from "../src/routes/fingerprint";
 import {
   normalizeContentType,
   normalizeAccept,
@@ -430,9 +431,38 @@ describe("GET /api/fingerprint", () => {
     ]);
     expect(r1.body.fingerprint).toBe(r2.body.fingerprint);
   });
+
+  it("enforces per-user token-bucket rate limit with 429 and Retry-After", async () => {
+    const app = createApp();
+    const limit = 60; // default FINGERPRINT_RATE_LIMIT_CAPACITY
+    const isolatedIp = "9.9.9.9";
+
+    // Exhaust the rate limit for this IP
+    for (let i = 0; i < limit; i++) {
+      await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    }
+
+    // The 61st request should be blocked
+    const res = await request(app).get("/api/fingerprint").set("x-forwarded-for", isolatedIp);
+    
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBeDefined();
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("rate_limit_exceeded");
+  });
 });
 
-// ── 35: fingerprintMiddleware error handling ────────────────────────────
+// ── 35: fingerprintRoute drain ───────────────────────────────────────
+
+describe("drainFingerprintRequests()", () => {
+  it("returns immediately when no in-flight requests", async () => {
+    const start = Date.now();
+    await drainFingerprintRequests(1000);
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+});
+
+// ── 36: fingerprintMiddleware error handling ────────────────────────────
 
 describe("fingerprintMiddleware error handling", () => {
   it("calls next() and does not throw when an internal error occurs", () => {

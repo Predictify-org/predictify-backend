@@ -1,15 +1,22 @@
 import { Router } from "express";
-import { getLeaderboard, getLeaderboardWithRefresh, getUserLeaderboardEntry } from "../services/leaderboardService";
+import {
+  getLeaderboard,
+  getLeaderboardWithRefresh,
+  getLeaderboardPage,
+  getLeaderboardPageWithRefresh,
+  getUserLeaderboardEntry,
+  LeaderboardEntry,
+} from "../services/leaderboardService";
 import { rateLimitAnon } from "../middleware/rateLimitAnon";
 import { conditionalGet } from "../middleware/etag";
 import { RouteErrorFactory } from "../errors";
 import { abortableRace, requestTimeout, RequestAbortedError } from "../middleware/timeout";
 import { logger } from "../config/logger";
+import { leaderboardMetricsMiddleware } from "../metrics/leaderboardMetrics";
 import {
   leaderboardQuerySchema,
   leaderboardUserParamsSchema,
   leaderboardUserQuerySchema,
-  LeaderboardPeriod,
 } from "../validators/leaderboard";
 
 export const leaderboardRouter = Router();
@@ -22,6 +29,9 @@ export const leaderboardRouter = Router();
  */
 const LEADERBOARD_TIMEOUT_MS = 5000;
 
+// Registered ahead of rate limiting / the timeout guard so that latency for
+// rejected requests (429s, 504s) is captured too, not just successful 200s.
+leaderboardRouter.use(leaderboardMetricsMiddleware);
 leaderboardRouter.use(rateLimitAnon);
 leaderboardRouter.use(
   requestTimeout(LEADERBOARD_TIMEOUT_MS, {
@@ -53,24 +63,46 @@ leaderboardRouter.get("/", async (req, res, next) => {
     return;
   }
 
-  const { limit, offset, refresh, period } = queryParse.data;
+  const { limit, offset, refresh, period, cursor } = queryParse.data;
 
   try {
-    const fetch = refresh
-      ? getLeaderboardWithRefresh(limit, offset, period)
-      : getLeaderboard(limit, offset, period);
-    const data = await abortableRace(fetch, signal);
+    let entries: LeaderboardEntry[];
+    let nextCursor: string | null = null;
 
-    const payload = {
-      data,
+    // Cursor-based pagination is used when:
+    // 1. An explicit cursor is provided (continuation page), or
+    // 2. No offset was specified (first page — gives clients a nextCursor
+    //    for subsequent requests, which is stable under concurrent writes).
+    // Explicit offset > 0 falls back to the legacy OFFSET path so existing
+    // callers continue to work unchanged.
+    const useCursor = cursor !== undefined || offset === 0;
+
+    if (useCursor) {
+      const fetch = refresh
+        ? getLeaderboardPageWithRefresh(limit, period, cursor)
+        : getLeaderboardPage(limit, period, cursor);
+      ({ entries, nextCursor } = await abortableRace(fetch, signal));
+    } else {
+      const data = refresh
+        ? await abortableRace(getLeaderboardWithRefresh(limit, offset, period), signal)
+        : await abortableRace(getLeaderboard(limit, offset, period), signal);
+      entries = data;
+    }
+
+    const payload: Record<string, unknown> = {
+      data: entries,
       meta: {
         limit,
         offset,
-        count: data.length,
+        count: entries.length,
         refresh,
         period,
-      }
+      },
     };
+
+    if (nextCursor) {
+      payload.nextCursor = nextCursor;
+    }
 
     // Strong ETag on the leaderboard payload; 304 if client already has it.
     if (conditionalGet(payload, req, res)) return;

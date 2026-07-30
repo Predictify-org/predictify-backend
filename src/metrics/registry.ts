@@ -34,6 +34,18 @@ export const statsRequestDuration = new Histogram({
   registers: [register],
 });
 
+export const leaderboardRequestDuration = new Histogram({
+  name: "leaderboard_request_duration_seconds",
+  help: "Latency of /api/leaderboard requests in seconds, segmented by route and status code",
+  labelNames: ["route", "status"] as const,
+  // Wider tail than stats' buckets: leaderboard reads can trigger a
+  // synchronous materialized-view REFRESH via ?refresh=true, which is
+  // bounded by LEADERBOARD_TIMEOUT_MS (5s) but routinely slower than a
+  // plain read.
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+
 export const indexerPollsTotal = new Counter({
   name: "indexer_polls_total",
   help: "Total number of indexer poll cycles completed",
@@ -99,8 +111,8 @@ export const signupAnomalyTopScore = new Gauge({
 
 export const marketsRequestDuration = new Histogram({
   name: "markets_request_duration_seconds",
-  help: "Duration of /api/markets requests in seconds, segmented by endpoint, method, and status code",
-  labelNames: ["endpoint", "method", "status"] as const,
+  help: "Duration of /api/markets requests in seconds, segmented by route, method, and status code",
+  labelNames: ["route", "method", "status"] as const,
   buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
@@ -135,34 +147,59 @@ export const usersEndpointDuration = new Histogram({
   registers: [register],
 });
 
-// Generic per-endpoint metrics used by metricsHistogramMiddleware.
 export const endpointRequestsTotal = new Counter({
   name: "endpoint_requests_total",
-  help: "Total number of requests to all instrumented endpoints, segmented by method, route, and status",
+  help: "Total number of requests per endpoint, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
   registers: [register],
 });
 
 export const endpointRequestDuration = new Histogram({
   name: "endpoint_request_duration_seconds",
-  help: "Request duration in seconds for all instrumented endpoints, segmented by method, route, and status",
+  help: "Request duration in seconds per endpoint, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
 
-// Per-endpoint metrics for /api/notifications.
-export const notificationsEndpointRequestsTotal = new Counter({
-  name: "notifications_endpoint_requests_total",
-  help: "Total number of requests to /api/notifications endpoints, segmented by method, route, and status",
+export const sloViolationsTotal = new Counter({
+  name: "slo_violations_total",
+  help: "Total SLO violations, segmented by method, route, and type (latency or error)",
+  labelNames: ["method", "route", "type"] as const,
+  registers: [register],
+});
+
+/**
+ * Per-endpoint request counter for /api/auth routes.
+ *
+ * Labels:
+ *   method — HTTP verb (POST, GET, …)
+ *   route  — Express route template (e.g. /challenge, /verify, /refresh,
+ *             /logout, /wallet/logout); dynamic path segments such as UUIDs
+ *             and numeric IDs are normalised to /:id by the middleware.
+ *   status — HTTP response status code as a string (e.g. "200", "422", "429")
+ */
+export const authEndpointRequestsTotal = new Counter({
+  name: "auth_endpoint_requests_total",
+  help: "Total number of requests to /api/auth endpoints, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
   registers: [register],
 });
 
-export const notificationsEndpointDuration = new Histogram({
-  name: "notifications_endpoint_duration_seconds",
-  help: "Request duration in seconds for /api/notifications endpoints, segmented by method, route, and status",
+/**
+ * Per-endpoint request latency histogram for /api/auth routes.
+ *
+ * Labels match authEndpointRequestsTotal so counter and histogram can be
+ * joined in PromQL / Grafana dashboards without additional relabelling.
+ *
+ * Buckets (seconds) are tuned for auth flows: most successful challenge +
+ * verify pairs complete in < 100 ms; the 10 s upper bound catches edge-case
+ * timeouts before the 15 s route-level deadline fires.
+ */
+export const authEndpointDuration = new Histogram({
+  name: "auth_endpoint_duration_seconds",
+  help: "Request duration in seconds for /api/auth endpoints, segmented by method, route, and status",
   labelNames: ["method", "route", "status"] as const,
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
   registers: [register],
 });

@@ -202,6 +202,56 @@ describe("GET /api/markets/:id/prediction-count", () => {
     expect(data).toHaveProperty("computedAt");
     expect(data).toHaveProperty("cached");
   });
+
+  // ── ETag / conditional GET ─────────────────────────────────────────────
+
+  it("returns a strong ETag header on 200", async () => {
+    mockGetPredictionCount.mockResolvedValueOnce({
+      marketId: "mkt-1",
+      count: 42,
+      computedAt: "2026-07-23T12:00:00.000Z",
+      cached: false,
+    });
+
+    const res = await getPredictionCount("mkt-1");
+    expect(res.status).toBe(200);
+    expect(res.headers["etag"]).toMatch(/^"[0-9a-f]{64}"$/);
+    expect(res.headers["cache-control"]).toBe("no-cache");
+  });
+
+  it("returns 304 when If-None-Match matches", async () => {
+    mockGetPredictionCount.mockResolvedValue({
+      marketId: "mkt-1",
+      count: 42,
+      computedAt: "2026-07-23T12:00:00.000Z",
+      cached: false,
+    });
+
+    const first = await getPredictionCount("mkt-1");
+    const etag = first.headers["etag"] as string;
+
+    const second = await request(app)
+      .get("/mkt-1/prediction-count")
+      .set("If-None-Match", etag);
+
+    expect(second.status).toBe(304);
+  });
+
+  it("returns 200 for a stale ETag", async () => {
+    mockGetPredictionCount.mockResolvedValueOnce({
+      marketId: "mkt-1",
+      count: 42,
+      computedAt: "2026-07-23T12:00:00.000Z",
+      cached: false,
+    });
+
+    const res = await request(app)
+      .get("/mkt-1/prediction-count")
+      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("data");
+  });
 });
 
 // ── Service contract tests (via the mock) ─────────────────────────────────────
