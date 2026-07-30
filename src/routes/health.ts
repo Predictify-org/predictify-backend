@@ -5,6 +5,7 @@ import { db } from "../db/client";
 import { auditLogs } from "../db/schema";
 import { eq, desc } from "drizzle-orm";
 import { requestTimeout, abortableRace } from "../middleware/timeout";
+import { idempotency } from "../middleware/idempotency";
 
 export const healthRouter = Router();
 
@@ -30,7 +31,11 @@ healthRouter.get("/", async (_req, res, next) => {
   }
 });
 
-healthRouter.post("/mutations", async (req, res, next) => {
+// The global Idempotency-Key middleware (src/index.ts) is registered after
+// this router's /api/health mount, so it never runs for this route; applying
+// it here directly makes retried mutations (e.g. after a client-side timeout)
+// safe without double-writing audit log entries.
+healthRouter.post("/mutations", idempotency, async (req, res, next) => {
   try {
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const correlationId = getRequestId();
