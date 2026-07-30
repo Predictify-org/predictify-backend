@@ -126,6 +126,22 @@ describe("Rate limiting on /api/exports", () => {
     expect(res.headers["ratelimit-remaining"]).toBe("0");
   });
 
+  it("uses a separate bucket for each authenticated user", async () => {
+    mockLimit.mockResolvedValue([{ id: TEST_USER_ID, stellarAddress: TEST_STELLAR }]);
+    mockOffset.mockResolvedValue([]);
+    const app = makeApp();
+
+    await request(app)
+      .get("/api/exports/predictions?format=json")
+      .set("Authorization", `Bearer ${signToken()}`);
+    const secondUser = await request(app)
+      .get("/api/exports/predictions?format=json")
+      .set("Authorization", `Bearer ${signToken("22222222-2222-2222-2222-222222222222", "GDEF9876543210ABCDEF9876543210ABCDEF9876543210ABCDEF98")}`);
+
+    expect(secondUser.status).toBe(200);
+    expect(secondUser.headers["ratelimit-remaining"]).toBe("1");
+  });
+
   it("returns 429 with proper error envelope", async () => {
     mockLimit.mockResolvedValue([{ id: TEST_USER_ID, stellarAddress: TEST_STELLAR }]);
     mockOffset.mockResolvedValue([]);
