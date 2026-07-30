@@ -162,6 +162,21 @@ describe("GET /api/notifications — cursor pagination", () => {
   // ── Cursor follow-through ─────────────────────────────────────────────────
 
   describe("cursor follow-through", () => {
+    it("keeps the cursor contract stable with an explicit page size", async () => {
+      const cursor = cursorFor(new Date("2026-07-03T00:00:00.000Z"), "notif-0005");
+      mockListNotifications.mockResolvedValueOnce({ data: [], nextCursor: null });
+
+      const res = await request(app).get(`/api/notifications?limit=100&cursor=${cursor}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ data: [], nextCursor: null });
+      expect(mockListNotifications).toHaveBeenCalledWith({
+        userId: "user-abc",
+        cursor,
+        limit: 100,
+      });
+    });
+
     it("returns non-null nextCursor when there are more rows", async () => {
       const item = makeItem();
       const cursor = cursorFor(item.createdAt, item.id);
