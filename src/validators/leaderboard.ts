@@ -20,6 +20,13 @@ export enum LeaderboardPeriod {
  *
  * Unknown query parameters are rejected via `.strict()` so the route
  * boundary is explicit and malformed input is never silently ignored.
+ *
+ * Pagination supports two modes:
+ * 1. **Cursor-based** (preferred): pass `cursor` (opaque token from a previous
+ *    response's `nextCursor`).  `offset` is ignored when `cursor` is present.
+ * 2. **Offset-based** (legacy): pass `offset` for backward compatibility.
+ *    Cursor-based pagination is stable under concurrent writes because it
+ *    does not skip rows when the underlying data shifts between pages.
  */
 export const leaderboardQuerySchema = z
   .object({
@@ -38,6 +45,10 @@ export const leaderboardQuerySchema = z
       .int("offset must be an integer")
       .nonnegative("offset must be a non-negative integer")
       .default(0),
+    cursor: z
+      .string({ invalid_type_error: "cursor must be a string" })
+      .min(1, "cursor must not be empty")
+      .optional(),
     refresh: z.preprocess(
       (v) => {
         if (typeof v === "string") {
