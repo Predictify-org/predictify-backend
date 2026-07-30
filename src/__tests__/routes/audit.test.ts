@@ -32,7 +32,7 @@ describe("auditRouter", () => {
         .set("Origin", allowedOrigin);
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({ events: [] });
+      expect(response.body).toEqual({ items: [], next_cursor: null });
     });
 
     it("accepts a valid limit query parameter", async () => {
@@ -41,7 +41,16 @@ describe("auditRouter", () => {
         .set("Origin", allowedOrigin);
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({ events: [] });
+      expect(response.body).toEqual({ items: [], next_cursor: null });
+
+    it("keeps the envelope stable when a cursor is provided", async () => {
+      const response = await request(app)
+        .get("/api/audit?limit=5&cursor=opaque-cursor")
+        .set("Origin", allowedOrigin);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ items: [], next_cursor: null });
+    });
     });
 
     it("returns 400 if limit is not a number", async () => {
