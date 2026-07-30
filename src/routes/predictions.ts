@@ -1,25 +1,31 @@
 /**
- * /api/predictions — prediction claim flow.
+ * /api/predictions — prediction claim flow, cursor-paginated listing,
+ * and resolution explanation.
  *
- * All routes require authentication via the `requireAuth` middleware.
- * Idempotency-Key header is supported for the POST /claim mutation via the
- * global idempotency middleware applied in `src/index.ts`.
+ * Cursor pagination over (created_at DESC, id DESC) keeps the result set
+ * stable under concurrent writes.  The cursor encodes the last row's
+ * (createdAt, id) pair as a versioned, base64url-encoded token.
+ * See `src/utils/cursor.ts` for wire format details.
+ *
+ * Design
+ * ------
+ * - All routes require authentication via `requireAuth`.
+ * - GET / (list) uses keyset pagination; `nextCursor` is null on the last page.
+ * - POST /claim is idempotent via the global Idempotency-Key middleware.
+ * - GET /:id/explain is a read-only educational endpoint.
  */
 
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth";
 import { claimWinnings, ClaimError } from "../services/claimService";
-import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
-import { Router, Request, Response, NextFunction } from "express";
-import { requireAuth } from "../middleware/requireAuth";
 import { createPerUserRateLimiter } from "../middleware/rateLimit";
 import { getPredictionExplanation } from "../services/predictionExplainService";
 import cancelRouter from "./predictions/cancel";
 import { createShareRouter } from "./predictions/share";
 import { predictionsHealthRouter } from "./predictions/health";
 import { listPredictions } from "../repositories/predictionRepo";
+import { conditionalGet } from "../middleware/etag";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { clampLimit } from "../utils/cursor";
@@ -28,7 +34,6 @@ import {
   predictionExplainTotal,
   predictionsRequestDuration,
 } from "../metrics/registry";
-import { clampLimit } from "../utils/cursor";
 import type { AuthenticatedRequest } from "../middleware/auth";
 import { listPredictionsQuerySchema } from "../validators/predictions";
 import { requestTimeout } from "../middleware/timeout";
