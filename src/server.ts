@@ -13,6 +13,7 @@ import { startPredictionsConfirmer } from "./workers/predictionsConfirmer";
 import { drainSearchRequests } from "./routes/search";
 import { drainExportsRequests } from "./routes/exports";
 import { drainFingerprintRequests } from "./routes/fingerprint";
+import { drainReportsRequests } from "./routes/reports";
 
 const app = createApp();
 let webhookWorker: WebhookWorker | null = null;
@@ -44,12 +45,17 @@ connectWithRetry()
         process.exit(1);
       }, 5000).unref();
 
+      // Stop accepting new connections while existing route handlers drain.
+      server.close();
+
       // Ensure in-flight /api/search requests finish
       await drainSearchRequests(4000);
       // Ensure in-flight /api/exports requests finish
       await drainExportsRequests(4000);
       // Ensure in-flight /api/fingerprint requests finish
       await drainFingerprintRequests(4000);
+      // Ensure in-flight /api/reports requests finish before closing Postgres
+      await drainReportsRequests(4000);
 
       stopScheduler();
       await closeDb();

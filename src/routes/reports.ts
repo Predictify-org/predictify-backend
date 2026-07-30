@@ -11,11 +11,41 @@
  * /api/reports/scheduled   — CRUD for user-owned scheduled report configs
  */
 
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { requireAuth } from "../middleware/requireAuth";
 import { createPerUserTokenBucketLimiter } from "../middleware/rateLimit";
 import { scheduledReportsRouter } from "./reports/scheduled";
 import { idempotency } from "../middleware/idempotency";
+
+let inFlightReportsRequests = 0;
+
+/** Wait for report handlers to finish before the database is closed. */
+export async function drainReportsRequests(timeoutMs = 10000): Promise<void> {
+  const start = Date.now();
+  while (inFlightReportsRequests > 0 && Date.now() - start <= timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** Track all requests entering /api/reports, including auth failures. */
+export function reportsInFlightMiddleware(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  inFlightReportsRequests += 1;
+  let finished = false;
+  const cleanup = () => {
+    if (!finished) {
+      finished = true;
+      inFlightReportsRequests = Math.max(0, inFlightReportsRequests - 1);
+    }
+  };
+
+  res.once("finish", cleanup);
+  res.once("close", cleanup);
+  next();
+}
 
 export interface ReportsRouterOptions {
   rateLimit?: {
@@ -27,6 +57,7 @@ export interface ReportsRouterOptions {
 export function createReportsRouter(options: ReportsRouterOptions = {}): Router {
   const router = Router();
 
+  router.use(reportsInFlightMiddleware);
   router.use(requireAuth);
   router.use(
     createPerUserTokenBucketLimiter({
