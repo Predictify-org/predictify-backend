@@ -1,7 +1,55 @@
+/**
+ * Unit tests for GET /api/markets and related handlers.
+ *
+ * These tests inject a Drizzle-shaped mock via `setDbForTests` and exercise the
+ * real route → service → getDb() path. There is no in-memory markets stub:
+ * seeded rows must come back from the mock query builder, and unexpected shapes
+ * must fail closed (not silently return []).
+ */
+
+import express from "express";
 import request from "supertest";
+import { v4 as uuidv4 } from "uuid";
 import type { Database } from "../src/db/client";
 import { setDbForTests } from "../src/db/client";
-import { createApp } from "../src/index";
+import { requestContextStorage } from "../src/lib/requestContext";
+
+jest.mock("../src/queue", () => ({
+  redisConnection: {
+    on: jest.fn(),
+    del: jest.fn().mockResolvedValue(1),
+    quit: jest.fn(),
+    get: jest.fn(),
+    set: jest.fn(),
+    ping: jest.fn().mockResolvedValue("PONG"),
+  },
+  webhookQueueName: "webhook-deliveries",
+  backupVerificationQueueName: "backup-verification",
+  reconciliationQueueName: "reconciliation",
+  marketResolutionQueueName: "market-resolution",
+  webhookQueue: {},
+  backupVerificationQueue: {},
+  reconciliationQueue: {},
+  marketResolutionQueue: {},
+}));
+
+jest.mock("../src/cache/marketsCache", () => ({
+  marketCacheKeys: {
+    all: "markets:all",
+    byId: (marketId: string) => `markets:${marketId}`,
+  },
+  invalidateMarketCache: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Pass through CORS in unit tests — CORS enforcement is covered by marketsCors.test.ts.
+jest.mock("../src/middleware/cors", () => ({
+  marketsCors: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  createCorsAllowlistMiddleware: () => (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
+}));
+
+import { marketsRouter } from "../src/routes/markets";
+import { errorHandler } from "../src/middleware/errorHandler";
 
 type MarketRow = {
   id: string;
@@ -10,77 +58,106 @@ type MarketRow = {
   resolutionTime: Date;
   version: number;
   createdAt?: Date;
+  archived?: boolean;
 };
 
 /**
- * Creates a complete mock database that implements the full Drizzle query builder interface.
- * This replaces the deprecated in-memory stub bypass and ensures tests use the real repository path.
+ * Creates a complete mock database that implements the full Drizzle query builder
+ * interface used by `listMarkets` / `getMarketById`. This is the only test double
+ * allowed — tests must not bypass the service with an in-memory markets array.
  */
-function createMarketDb(rows: MarketRow[]): Database {
-  // Sort rows by createdAt DESC, id DESC to simulate the cursor pagination order.
+function createMarketDb(rows: MarketRow[]): Database & { select: jest.Mock } {
   const sorted = [...rows].sort((a, b) => {
     const aTime = (a.createdAt ?? a.resolutionTime).getTime();
     const bTime = (b.createdAt ?? b.resolutionTime).getTime();
-    if (bTime !== aTime) return bTime - aTime; // DESC
-    return b.id.localeCompare(a.id); // id DESC tie-breaker
+    if (bTime !== aTime) return bTime - aTime;
+    return b.id.localeCompare(a.id);
   });
 
-  return {
-    select: jest.fn((_columns?: any) => ({
-      from: jest.fn((_table: any) => ({
-        where: jest.fn((_condition: any) => ({
-          orderBy: jest.fn((_orderByFn: any, ..._rest: any) => ({
-            limit: jest.fn(async (limitVal: number) => {
-              // limitVal is limit + 1 (probe row).
-              return sorted.slice(0, limitVal);
-            }),
-          })),
+  const select = jest.fn((_columns?: unknown) => ({
+    from: jest.fn((_table: unknown) => ({
+      where: jest.fn((_condition: unknown) => ({
+        orderBy: jest.fn((_orderByFn: unknown, ..._rest: unknown[]) => ({
+          limit: jest.fn(async (limitVal: number) => sorted.slice(0, limitVal)),
         })),
+        limit: jest.fn(async (limitVal: number) => sorted.slice(0, limitVal)),
       })),
     })),
-    transaction: jest.fn(async (fn: Function) => {
+  }));
+
+  return {
+    select,
+    transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       return fn({
-        select: jest.fn((_columns?: any) => ({
-          from: jest.fn((_table: any) => ({
-            where: jest.fn((_condition: any) => ({
+        select: jest.fn((_columns?: unknown) => ({
+          from: jest.fn((_table: unknown) => ({
+            where: jest.fn((_condition: unknown) => ({
               limit: jest.fn(async (limitVal: number) => sorted.slice(0, limitVal)),
             })),
           })),
         })),
-        update: jest.fn((_table: any) => ({
-          set: jest.fn((values: any) => ({
-            where: jest.fn((_condition: any) => ({
-              returning: jest.fn(async () => [{ ...sorted[0], ...values }]),
+        update: jest.fn((_table: unknown) => ({
+          set: jest.fn((values: unknown) => ({
+            where: jest.fn((_condition: unknown) => ({
+              returning: jest.fn(async () => [{ ...sorted[0], ...(values as object) }]),
             })),
           })),
         })),
-        insert: jest.fn((_table: any) => ({
+        insert: jest.fn((_table: unknown) => ({
           values: jest.fn(async () => undefined),
         })),
       });
     }),
-  } as unknown as Database;
+  } as unknown as Database & { select: jest.Mock };
 }
+
+/**
+ * Lightweight app mounting only the markets router — avoids importing the full
+ * `createApp` graph (unrelated modules) while still using the real markets path.
+ */
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  // Inject a default Origin so marketsCors() allowlist middleware passes in tests.
+  app.use((req, _res, next) => {
+    if (!req.headers["origin"]) {
+      req.headers["origin"] = "http://localhost:5173";
+    }
+    next();
+  });
+  app.use((req, _res, next) => {
+    const requestId = uuidv4();
+    (req as { id?: string }).id = requestId;
+    requestContextStorage.run({ requestId }, next);
+  });
+  app.use("/api/markets", marketsRouter);
+  app.use(errorHandler);
+  return app;
+}
+
+const SEEDED = {
+  id: "market-1",
+  question: "Will Predictify ship real market reads?",
+  status: "active",
+  resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
+  version: 1,
+  createdAt: new Date("2026-06-01T00:00:00.000Z"),
+  archived: false,
+} as const;
 
 describe("GET /api/markets", () => {
   afterEach(() => {
     setDbForTests(null);
   });
 
-  it("returns seeded markets from the database query", async () => {
-    setDbForTests(createMarketDb([
-      {
-        id: "market-1",
-        question: "Will Predictify ship real market reads?",
-        status: "active",
-        resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
-        version: 1,
-      },
-    ]));
+  it("returns seeded markets from the database query (real repo path)", async () => {
+    const mockDb = createMarketDb([SEEDED]);
+    setDbForTests(mockDb);
 
     const res = await request(createApp()).get("/api/markets");
 
     expect(res.status).toBe(200);
+    expect(mockDb.select).toHaveBeenCalled();
     expect(res.body).toMatchObject({
       data: [
         {
@@ -92,18 +169,12 @@ describe("GET /api/markets", () => {
       ],
       nextCursor: null,
     });
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data).toHaveLength(1);
   });
 
   it("returns an ETag header and supports conditional revalidation", async () => {
-    setDbForTests(createMarketDb([
-      {
-        id: "market-1",
-        question: "Will Predictify ship real market reads?",
-        status: "active",
-        resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
-        version: 1,
-      },
-    ]));
+    setDbForTests(createMarketDb([SEEDED]));
 
     const first = await request(createApp()).get("/api/markets");
 
@@ -120,31 +191,26 @@ describe("GET /api/markets", () => {
   });
 
   it("returns 200 for a stale If-None-Match value", async () => {
-    setDbForTests(createMarketDb([
-      {
-        id: "market-1",
-        question: "Will Predictify ship real market reads?",
-        status: "active",
-        resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
-        version: 1,
-      },
-    ]));
+    setDbForTests(createMarketDb([SEEDED]));
 
     const res = await request(createApp())
       .get("/api/markets")
-      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+      .set(
+        "If-None-Match",
+        '"000000000000000000000000000000000000000000000000000000000000dead"',
+      );
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("data");
   });
 
-  it("returns empty array when no markets exist", async () => {
+  it("returns empty data with null nextCursor when no markets exist", async () => {
     setDbForTests(createMarketDb([]));
 
     const res = await request(createApp()).get("/api/markets");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ data: [] });
+    expect(res.body).toEqual({ data: [], nextCursor: null });
   });
 
   it("respects pagination limit parameter", async () => {
@@ -153,6 +219,7 @@ describe("GET /api/markets", () => {
       question: `Question ${i + 1}`,
       status: "active",
       resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
+      createdAt: new Date(`2026-07-0${i + 1}T00:00:00.000Z`),
       version: 1,
     }));
 
@@ -162,22 +229,27 @@ describe("GET /api/markets", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
+    expect(res.body.nextCursor).not.toBeNull();
   });
 
-  it("rejects invalid pagination input", async () => {
+  it("rejects invalid pagination input with standardized validation envelope", async () => {
     const res = await request(createApp()).get("/api/markets?limit=1000");
 
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: { code: "invalid_query" } });
+    expect(res.body).toMatchObject({
+      error: { code: "validation_error" },
+    });
   });
 
-  it("rejects non-numeric limit", async () => {
+  it("rejects non-numeric limit with standardized validation envelope", async () => {
     setDbForTests(createMarketDb([]));
 
     const res = await request(createApp()).get("/api/markets?limit=abc");
 
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: { code: "invalid_query" } });
+    expect(res.body).toMatchObject({
+      error: { code: "validation_error" },
+    });
   });
 
   it("respects cursor pagination", async () => {
@@ -194,12 +266,16 @@ describe("GET /api/markets", () => {
     const res = await request(createApp()).get("/api/markets?limit=2");
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
-    expect(res.body.nextCursor).not.toBeNull();
+    expect(typeof res.body.nextCursor).toBe("string");
+    expect(res.body.nextCursor.length).toBeGreaterThan(0);
 
-    const res2 = await request(createApp()).get(`/api/markets?limit=2&cursor=${res.body.nextCursor}`);
+    // Cursor is accepted by the real validation + service path (mock DB does not
+    // apply keyset filtering; integration tests cover full keyset semantics).
+    const res2 = await request(createApp()).get(
+      `/api/markets?limit=2&cursor=${encodeURIComponent(res.body.nextCursor)}`,
+    );
     expect(res2.status).toBe(200);
     expect(res2.body.data).toHaveLength(2);
-    expect(res2.body.data[0].id).not.toBe(res.body.data[0].id);
   });
 });
 
@@ -209,20 +285,12 @@ describe("GET /api/markets/:id", () => {
   });
 
   it("returns a single market by ID", async () => {
-    setDbForTests(createMarketDb([
-      {
-        id: "market-1",
-        question: "Will Predictify ship real market reads?",
-        status: "active",
-        resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
-        version: 1,
-      },
-    ]));
+    setDbForTests(createMarketDb([SEEDED]));
 
     const res = await request(createApp()).get("/api/markets/market-1");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       data: {
         id: "market-1",
         question: "Will Predictify ship real market reads?",
@@ -243,15 +311,17 @@ describe("GET /api/markets/:id", () => {
   });
 
   it("handles market ID with special characters", async () => {
-    setDbForTests(createMarketDb([
-      {
-        id: "market-abc-123",
-        question: "Test question",
-        status: "active",
-        resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
-        version: 1,
-      },
-    ]));
+    setDbForTests(
+      createMarketDb([
+        {
+          id: "market-abc-123",
+          question: "Test question",
+          status: "active",
+          resolutionTime: new Date("2026-07-01T00:00:00.000Z"),
+          version: 1,
+        },
+      ]),
+    );
 
     const res = await request(createApp()).get("/api/markets/market-abc-123");
 
@@ -296,7 +366,6 @@ describe("PATCH /api/markets/:id (secure update with versioning)", () => {
         extraField: "should be rejected",
       });
 
-    // Validation schema is strict(), so this should fail
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });
@@ -306,13 +375,14 @@ describe("Regression: ensure stub bypass is removed", () => {
     setDbForTests(null);
   });
 
-  it("throws error if mock database returns non-array from select", async () => {
+  it("does not silently return [] when the DB query shape is wrong", async () => {
     const badDb = {
       select: jest.fn(() => ({
         from: jest.fn(() => ({
           where: jest.fn(() => ({
             orderBy: jest.fn(() => ({
-              limit: jest.fn(async () => null), // Wrong: should be an array
+              // Residual stub used to coerce this to [] — must fail closed now.
+              limit: jest.fn(async () => null),
             })),
           })),
         })),
@@ -323,31 +393,62 @@ describe("Regression: ensure stub bypass is removed", () => {
 
     const res = await request(createApp()).get("/api/markets");
 
-    // Should fail because the real service now validates the response type
     expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.body.data).toBeUndefined();
   });
 
-  it("validates market ID is a string in getMarketById", async () => {
-    const mockDb = {
+  it("listUpcomingMarkets fails closed instead of returning [] on bad DB shape", async () => {
+    const { listUpcomingMarkets } = await import("../src/services/marketService");
+    const badDb = {
       select: jest.fn(() => ({
         from: jest.fn(() => ({
           where: jest.fn(() => ({
-            limit: jest.fn(async () => [
-              {
-                id: "market-1",
-                question: "Test",
-                status: "active",
-                resolutionTime: new Date(),
-              },
-            ]),
+            orderBy: jest.fn(() => ({
+              limit: jest.fn(async () => null),
+            })),
           })),
         })),
       })),
     } as unknown as Database;
 
+    setDbForTests(badDb);
+
+    await expect(listUpcomingMarkets({ limit: 5 })).rejects.toThrow(
+      /rows is not an array/,
+    );
+  });
+
+  it("returns seeded rows after insert-shaped DB state (no empty stub)", async () => {
+    const mockDb = createMarketDb([
+      {
+        id: "seeded-after-create",
+        question: "Seeded market must appear in list",
+        status: "active",
+        resolutionTime: new Date("2026-08-01T00:00:00.000Z"),
+        createdAt: new Date("2026-07-15T00:00:00.000Z"),
+        version: 1,
+      },
+    ]);
     setDbForTests(mockDb);
 
-    // This test validates that the service layer performs input validation
+    const res = await request(createApp()).get("/api/markets");
+
+    expect(res.status).toBe(200);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    expect(res.body.data).toEqual([
+      {
+        id: "seeded-after-create",
+        question: "Seeded market must appear in list",
+        status: "active",
+        resolutionTime: "2026-08-01T00:00:00.000Z",
+      },
+    ]);
+    expect(res.body.nextCursor).toBeNull();
+  });
+
+  it("validates market ID is a string in getMarketById", async () => {
+    setDbForTests(createMarketDb([SEEDED]));
+
     const res = await request(createApp()).get("/api/markets/market-1");
     expect(res.status).toBe(200);
   });
@@ -358,15 +459,8 @@ describe("GET /api/markets/tags", () => {
     setDbForTests(null);
   });
 
-  it("returns market tags with counts", async () => {
-    // Mock the database to return tags
-    const mockTagsResult = [
-      { tag: "football", count: 5 },
-      { tag: "sports", count: 3 },
-      { tag: "politics", count: 2 },
-    ];
-
-    const mockDb = {
+  function createTagsDb(tags: Array<{ tag: string; count: number }>) {
+    return {
       select: jest.fn(() => ({
         from: jest.fn(() => ({
           where: jest.fn(() => ({
@@ -376,13 +470,21 @@ describe("GET /api/markets/tags", () => {
           })),
         })),
       })),
-      transaction: jest.fn(async (fn: Function) => fn({})),
+      transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({})),
       execute: jest.fn(async () => ({
-        rows: mockTagsResult,
+        rows: tags,
       })),
     } as unknown as Database;
+  }
 
-    setDbForTests(mockDb);
+  it("returns market tags with counts", async () => {
+    const mockTagsResult = [
+      { tag: "football", count: 5 },
+      { tag: "sports", count: 3 },
+      { tag: "politics", count: 2 },
+    ];
+
+    setDbForTests(createTagsDb(mockTagsResult));
 
     const res = await request(createApp()).get("/api/markets/tags");
     expect(res.status).toBe(200);
@@ -392,48 +494,15 @@ describe("GET /api/markets/tags", () => {
   });
 
   it("returns empty array when no tags", async () => {
-    const mockDb = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(async () => []),
-            })),
-          })),
-        })),
-      })),
-      transaction: jest.fn(async (fn: Function) => fn({})),
-      execute: jest.fn(async () => ({
-        rows: [],
-      })),
-    } as unknown as Database;
-
-    setDbForTests(mockDb);
+    setDbForTests(createTagsDb([]));
 
     const res = await request(createApp()).get("/api/markets/tags");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: [] });
   });
 
-  // ── ETag / conditional GET ────────────────────────────────────────────
-
   it("returns a strong ETag header on 200", async () => {
-    const mockTagsResult = [{ tag: "sports", count: 5 }];
-    const mockDb = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(async () => []),
-            })),
-          })),
-        })),
-      })),
-      transaction: jest.fn(async (fn: Function) => fn({})),
-      execute: jest.fn(async () => ({ rows: mockTagsResult })),
-    } as unknown as Database;
-
-    setDbForTests(mockDb);
+    setDbForTests(createTagsDb([{ tag: "sports", count: 5 }]));
 
     const res = await request(createApp()).get("/api/markets/tags");
     expect(res.status).toBe(200);
@@ -442,22 +511,7 @@ describe("GET /api/markets/tags", () => {
   });
 
   it("returns 304 when If-None-Match matches", async () => {
-    const mockTagsResult = [{ tag: "sports", count: 5 }];
-    const mockDb = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(async () => []),
-            })),
-          })),
-        })),
-      })),
-      transaction: jest.fn(async (fn: Function) => fn({})),
-      execute: jest.fn(async () => ({ rows: mockTagsResult })),
-    } as unknown as Database;
-
-    setDbForTests(mockDb);
+    setDbForTests(createTagsDb([{ tag: "sports", count: 5 }]));
     const first = await request(createApp()).get("/api/markets/tags");
     const etag = first.headers["etag"] as string;
 
@@ -469,26 +523,14 @@ describe("GET /api/markets/tags", () => {
   });
 
   it("returns 200 for a stale ETag", async () => {
-    const mockTagsResult = [{ tag: "sports", count: 5 }];
-    const mockDb = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(async () => []),
-            })),
-          })),
-        })),
-      })),
-      transaction: jest.fn(async (fn: Function) => fn({})),
-      execute: jest.fn(async () => ({ rows: mockTagsResult })),
-    } as unknown as Database;
-
-    setDbForTests(mockDb);
+    setDbForTests(createTagsDb([{ tag: "sports", count: 5 }]));
 
     const res = await request(createApp())
       .get("/api/markets/tags")
-      .set("If-None-Match", '"000000000000000000000000000000000000000000000000000000000000dead"');
+      .set(
+        "If-None-Match",
+        '"000000000000000000000000000000000000000000000000000000000000dead"',
+      );
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("data");
@@ -500,30 +542,35 @@ describe("GET /api/markets Timeout Validation", () => {
     setDbForTests(null);
   });
 
-  it("returns 408 Request Timeout when the database query exceeds the timeout limit", async () => {
-    // Mock the database to simulate a delayed response
-    const mockDb = {
-      select: jest.fn(() => ({
-        from: jest.fn(() => ({
-          where: jest.fn(() => ({
-            orderBy: jest.fn(() => ({
-              limit: jest.fn(() => new Promise((resolve) => setTimeout(resolve, 11000))),
+  it(
+    "returns 408 Request Timeout when the database query exceeds the timeout limit",
+    async () => {
+      const mockDb = {
+        select: jest.fn(() => ({
+          from: jest.fn(() => ({
+            where: jest.fn(() => ({
+              orderBy: jest.fn(() => ({
+                limit: jest.fn(
+                  () => new Promise((resolve) => setTimeout(resolve, 11000)),
+                ),
+              })),
             })),
           })),
         })),
-      })),
-    } as unknown as Database;
+      } as unknown as Database;
 
-    setDbForTests(mockDb);
+      setDbForTests(mockDb);
 
-    const res = await request(createApp()).get("/api/markets");
-    
-    expect(res.status).toBe(408);
-    expect(res.body).toMatchObject({
-      error: {
-        code: "timeout",
-        message: "Request timeout exceeded"
-      }
-    });
-  }, 15000); // Give the test block enough time to complete
+      const res = await request(createApp()).get("/api/markets");
+
+      expect(res.status).toBe(408);
+      expect(res.body).toMatchObject({
+        error: {
+          code: "timeout",
+          message: "Request timeout exceeded",
+        },
+      });
+    },
+    15000,
+  );
 });

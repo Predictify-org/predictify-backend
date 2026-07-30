@@ -197,8 +197,9 @@ export async function listUpcomingMarkets(
     .orderBy(asc(markets.resolutionTime), asc(markets.id))
     .limit(limit);
 
+  // Fail closed — never silently return [] (residual stub / bypass anti-pattern).
   if (!Array.isArray(rows)) {
-    return [];
+    throw new Error("Unexpected response from database: rows is not an array");
   }
 
   return rows.map((r: any) => ({

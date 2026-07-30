@@ -25,7 +25,10 @@ import { predictionCountRouter } from "./prediction-count";
 import { watchersRouter } from "./watchers";
 import { marketAuditRouter } from "../marketAudit";
 import { disputesRouter } from "../disputes";
-import { predictionsRouter } from "../predictions";
+// Market-scoped predictions list (GET /:id/predictions). Must NOT import the
+// top-level /api/predictions router — that one applies requireAuth globally and
+// would intercept GET /api/markets with 401, masking the real list handler.
+import { predictionsRouter } from "./predictions";
 import { requestTimeout } from "../../middleware/timeout";
 import {
   listMarketsQuerySchema,
@@ -115,6 +118,13 @@ marketsRouter.get("/search", async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/markets
+ *
+ * Lists non-archived markets via the real repository/service path (`listMarkets` →
+ * `getDb()`). There is no in-memory stub or silent empty-array bypass: seeded rows
+ * must be returned by the database query, and unexpected DB shapes throw.
+ */
 marketsRouter.get("/", async (req, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   try {
@@ -130,6 +140,7 @@ marketsRouter.get("/", async (req, res, next) => {
       "markets_list_fetching",
     );
 
+    // Always use the service/repo path — do not short-circuit to an empty list.
     const page = await listMarkets({ limit, cursor });
     const payload = { data: page.data, nextCursor: page.nextCursor };
 

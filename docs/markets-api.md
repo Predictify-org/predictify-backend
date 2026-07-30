@@ -5,6 +5,11 @@
 Returns a cursor-paginated list of non-archived markets, ordered by newest first
 (`createdAt DESC, id DESC`).
 
+> **Implementation note:** This endpoint always reads through `listMarkets` →
+> `getDb()`. There is no in-memory stub or silent empty-array fallback. After
+> seeding the database, listed markets must appear in the response; unexpected
+> query shapes fail closed with a 5xx rather than returning `{ data: [] }`.
+
 ### Query Parameters
 
 | Parameter | Type   | Required | Default | Constraints | Description                                                   |
