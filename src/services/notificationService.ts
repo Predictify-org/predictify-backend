@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import { db } from "../db/client";
-import { notifications, type Notification } from "../db/schema";
+import { notifications, users, type Notification } from "../db/schema";
 import {
   clampLimit,
   decodeCursor,
@@ -144,5 +144,59 @@ export async function listNotifications(
   return {
     data: pageRows as NotificationItem[],
     nextCursor: hasMore && last ? encodeCursor(rowToCursorKey(last)) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast notification to all users
+// ---------------------------------------------------------------------------
+
+export interface BroadcastNotificationParams {
+  title: string;
+  body: string;
+  type?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface BroadcastNotificationResult {
+  recipientCount: number;
+  notificationCount: number;
+}
+
+/**
+ * Broadcast a notification to all registered users in the platform.
+ * Inserts notification rows in batches to handle large user sets efficiently.
+ */
+export async function broadcastNotification(
+  params: BroadcastNotificationParams,
+): Promise<BroadcastNotificationResult> {
+  const { title, body, type = "system_broadcast", data = {} } = params;
+
+  const allUsers = await db.select({ id: users.id }).from(users);
+
+  if (allUsers.length === 0) {
+    return { recipientCount: 0, notificationCount: 0 };
+  }
+
+  const BATCH_SIZE = 500;
+  let notificationCount = 0;
+
+  for (let i = 0; i < allUsers.length; i += BATCH_SIZE) {
+    const chunk = allUsers.slice(i, i + BATCH_SIZE);
+    const rows = chunk.map((u) => ({
+      userId: u.id,
+      type,
+      title,
+      body,
+      data,
+    }));
+
+    await db.insert(notifications).values(rows);
+    notificationCount += rows.length;
+  }
+
+  return {
+    recipientCount: allUsers.length,
+    notificationCount,
   };
 }

@@ -74,6 +74,7 @@ import { backupVerificationWorker } from "./workers/backupVerificationWorker";
 import { reconciliationWorker } from "./workers/reconciliationWorker";
 import { rateLimitRouter } from "./routes/rate-limit";
 import { adminRateLimitInspectRouter } from "./routes/admin/rate-limit/inspect";
+import { adminBroadcastRouter } from "./routes/admin/notifications/broadcast";
 import { quotaRequestsRouter } from "./routes/quota/requests";
 import { startSlowQueryAlerter } from "./workers/slowQueryAlerter";
 import { reportsRouter } from "./routes/reports";
@@ -226,6 +227,7 @@ export function createApp(): express.Express {
   app.use("/api/admin/markets", adminMarketsRouter);
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);
+  app.use("/api/admin/notifications/broadcast", adminBroadcastRouter);
   app.use("/api/reports", reportsRouter);
   app.use("/api/exports", exportsRouter);
   app.use("/api/fingerprint", fingerprintRouter);
