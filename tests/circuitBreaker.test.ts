@@ -381,6 +381,25 @@ describe("forceCircuitStateForTests", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Legacy option alias
+// ---------------------------------------------------------------------------
+
+describe("resetTimeoutMs legacy alias", () => {
+  it("is accepted as an alias for halfOpenAfterMs", () => {
+    const cb = getCircuitBreaker("legacy-alias", { resetTimeoutMs: 7_500 });
+    expect(cb.snapshot().halfOpenAfterMs).toBe(7_500);
+  });
+
+  it("loses to halfOpenAfterMs when both are supplied", () => {
+    const cb = getCircuitBreaker("legacy-both", {
+      halfOpenAfterMs: 1_000,
+      resetTimeoutMs: 9_000,
+    });
+    expect(cb.snapshot().halfOpenAfterMs).toBe(1_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // snapshot() — name field
 // ---------------------------------------------------------------------------
 

@@ -28,6 +28,7 @@
  *  - 403 Forbidden     missing/invalid/non-admin JWT
  *  - 429 Too Many Requests  rate limit exceeded
  *  - 503 Service Unavailable  circuit is OPEN; body: { error: { code: "service_unavailable", retryAfterMs } }
+ *    and a `Retry-After` header (seconds) so standard HTTP clients back off.
  */
 
 import { Router } from "express";
@@ -66,103 +67,124 @@ export function createAdminImpersonateRouter(
   const router = Router();
   const limit = opts.rateLimitPerMinute ?? 60;
 
-  // Lazily instantiated so tests can inject custom thresholds via opts.
+  // Resolved from the shared registry so every caller of this endpoint trips
+  // the same counters. `opts.circuitBreaker` is applied even if the breaker
+  // already exists, so thresholds are honoured regardless of creation order.
   const breaker = getCircuitBreaker(IMPERSONATE_CIRCUIT_NAME, opts.circuitBreaker);
 
-  router.use(
-    rateLimit({
-      windowMs: 60_000,
-      limit,
-      keyGenerator: (req) =>
-        (req.headers.authorization as string | undefined) ?? req.ip ?? "unknown",
-      standardHeaders: "draft-6",
-      legacyHeaders: false,
-      message: { error: { code: "rate_limit_exceeded" } },
-    }),
-  );
-
-  router.use(requireAdmin);
-
-  router.post("/:address/impersonate", async (req, res, next) => {
-    const reqId = getRequestId() ?? (req as { id?: string }).id ?? "unknown";
-
-    try {
-      const parsed = paramsSchema.safeParse(req.params);
-
-      if (!parsed.success) {
-        res.status(400).json({
-          error: {
-            code: "validation_error",
-            details: parsed.error.issues,
-            requestId: reqId,
-          },
-        });
-        return;
-      }
-
-      const targetAddress = parsed.data.address;
-      const adminAddress = req.adminAddress!;
-
-      // Wrap all downstream I/O in the circuit breaker.
-      // If the breaker is OPEN this throws CircuitOpenError immediately
-      // (before any network or DB call is attempted).
-      const token = await breaker.fire(async () => {
-        // 1. Audit log in global audit_logs
-        await createAuditLog({
-          action: "admin.impersonate",
-          walletAddress: adminAddress,
-          ip: req.ip ?? "unknown",
-          correlationId: reqId,
-          beforeState: null,
-          afterState: { targetAddress, role: "user" },
-        });
-
-        // 2. Audit log in admin_audit_log keyed by target address
-        await db.insert(adminAuditLog).values({
-          adminAddress,
-          action: "impersonate",
-          targetAddress,
-        });
-
-        // 3. Structured logging with correlation IDs
-        logger.info(
-          {
-            adminAddress,
-            targetAddress,
-            correlationId: reqId,
-          },
-          "Admin impersonated user",
-        );
-
-        // 4. Generate the impersonation token
-        return signAccessToken({ sub: targetAddress, role: "user" });
-      });
-
-      res.status(200).json({ data: { token } });
-    } catch (err) {
-      if (err instanceof CircuitOpenError) {
-        const retryAfterMs = breaker.snapshot().halfOpenAfterMs;
-        logger.warn(
-          {
-            circuitName: IMPERSONATE_CIRCUIT_NAME,
-            openedAt: err.openedAt,
-            reqId,
-          },
-          "impersonate_circuit_open",
-        );
-        res.status(503).json({
-          error: {
-            code: "service_unavailable",
-            message: "Impersonate service is temporarily unavailable. Please retry later.",
-            retryAfterMs,
-            requestId: reqId,
-          },
-        });
-        return;
-      }
-      next(err);
-    }
+  const impersonateRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit,
+    keyGenerator: (req) =>
+      (req.headers.authorization as string | undefined) ?? req.ip ?? "unknown",
+    standardHeaders: "draft-6",
+    legacyHeaders: false,
+    message: { error: { code: "rate_limit_exceeded" } },
   });
+
+  // Middleware is attached to the route rather than via `router.use` so that
+  // mounting this router on the shared /api/admin/users prefix cannot apply
+  // this endpoint's rate limit or auth to sibling routers' requests that
+  // merely pass through on their way to a later mount.
+  router.post(
+    "/:address/impersonate",
+    impersonateRateLimit,
+    requireAdmin,
+    async (req, res, next) => {
+      const reqId = getRequestId() ?? (req as { id?: string }).id ?? "unknown";
+
+      try {
+        const parsed = paramsSchema.safeParse(req.params);
+
+        if (!parsed.success) {
+          res.status(400).json({
+            error: {
+              code: "validation_error",
+              details: parsed.error.issues,
+              requestId: reqId,
+            },
+          });
+          return;
+        }
+
+        const targetAddress = parsed.data.address;
+        const adminAddress = req.adminAddress!;
+
+        // Wrap all downstream I/O in the circuit breaker.
+        // If the breaker is OPEN this throws CircuitOpenError immediately
+        // (before any network or DB call is attempted).
+        const token = await breaker.execute(async () => {
+          // 1. Audit log in global audit_logs
+          await createAuditLog({
+            action: "admin.impersonate",
+            walletAddress: adminAddress,
+            ip: req.ip ?? "unknown",
+            correlationId: reqId,
+            beforeState: null,
+            afterState: { targetAddress, role: "user" },
+          });
+
+          // 2. Audit log in admin_audit_log keyed by target address
+          await db.insert(adminAuditLog).values({
+            adminAddress,
+            action: "impersonate",
+            targetAddress,
+          });
+
+          // 3. Structured logging with correlation IDs
+          logger.info(
+            {
+              adminAddress,
+              targetAddress,
+              correlationId: reqId,
+            },
+            "Admin impersonated user",
+          );
+
+          // 4. Generate the impersonation token
+          return signAccessToken({ sub: targetAddress, role: "user" });
+        });
+
+        res.status(200).json({ data: { token } });
+      } catch (err) {
+        if (err instanceof CircuitOpenError) {
+          // Report the time actually remaining before a probe is allowed
+          // rather than the full window, so a caller that retries late is not
+          // told to wait all over again.
+          const { halfOpenAfterMs } = breaker.snapshot();
+          const elapsed = Date.now() - err.openedAt;
+          const retryAfterMs = Math.max(0, halfOpenAfterMs - elapsed);
+
+          logger.warn(
+            {
+              circuitName: IMPERSONATE_CIRCUIT_NAME,
+              state: err.state,
+              openedAt: err.openedAt,
+              retryAfterMs,
+              correlationId: reqId,
+              reqId,
+            },
+            "impersonate_circuit_open",
+          );
+
+          // Standard HTTP back-off signal, in seconds, alongside the
+          // millisecond precision value in the error envelope.
+          res.setHeader("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+          res.status(503).json({
+            error: {
+              code: "service_unavailable",
+              message:
+                "Impersonate service is temporarily unavailable. Please retry later.",
+              retryAfterMs,
+              requestId: reqId,
+            },
+          });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
 
   return router;
 }

@@ -2893,6 +2893,70 @@ registry.registerPath({
   },
 });
 
+// ── /api/admin/users/{address}/impersonate ──────────────────────────────────
+
+/**
+ * 503 envelope for the impersonate endpoint. `retryAfterMs` reports the time
+ * remaining before the circuit breaker will allow a recovery probe; the same
+ * value is echoed, in seconds, in the `Retry-After` response header.
+ */
+const CircuitOpenErrorBody = z
+  .object({
+    error: z.object({
+      code: z.literal("service_unavailable"),
+      message: z.string(),
+      retryAfterMs: z.number().int().nonnegative(),
+      requestId: z.string(),
+    }),
+  })
+  .openapi("CircuitOpenErrorBody");
+
+registry.registerPath({
+  method: "post",
+  path: "/api/admin/users/{address}/impersonate",
+  operationId: "impersonateUser",
+  tags: ["Admin"],
+  summary: "Generate an impersonation JWT for a user (admin only)",
+  description:
+    "Admin-only endpoint that creates an audit-logged JWT allowing the caller " +
+    "to act as the target user. The generated token carries a `user` role " +
+    "assertion.\n\n" +
+    "Downstream work (audit-log writes and token signing) is wrapped in a " +
+    "per-endpoint circuit breaker. After repeated downstream failures the " +
+    "breaker opens and the endpoint fast-fails with 503 without attempting " +
+    "any downstream call, until a recovery probe succeeds.",
+  security: [{ bearerAuth: [] }],
+  request: { params: z.object({ address: z.string() }) },
+  responses: {
+    200: {
+      description: "Impersonation token",
+      content: {
+        "application/json": {
+          schema: z.object({ data: z.object({ token: z.string() }) }),
+        },
+      },
+    },
+    400: {
+      description: "Validation error — address is blank or whitespace-only",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden — missing, invalid, or non-admin JWT",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    503: {
+      description:
+        "Circuit breaker is open — downstream dependencies are unhealthy and " +
+        "no downstream call was attempted. Retry after `retryAfterMs`.",
+      content: { "application/json": { schema: CircuitOpenErrorBody } },
+    },
+  },
+});
+
 // ── /api/admin/audit ────────────────────────────────────────────────────────
 
 const AuditEntry = z
