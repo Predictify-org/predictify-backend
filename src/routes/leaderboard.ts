@@ -5,6 +5,7 @@ import { conditionalGet } from "../middleware/etag";
 import { RouteErrorFactory } from "../errors";
 import { abortableRace, requestTimeout, RequestAbortedError } from "../middleware/timeout";
 import { logger } from "../config/logger";
+import { leaderboardMetricsMiddleware } from "../metrics/leaderboardMetrics";
 import {
   leaderboardQuerySchema,
   leaderboardUserParamsSchema,
@@ -22,6 +23,9 @@ export const leaderboardRouter = Router();
  */
 const LEADERBOARD_TIMEOUT_MS = 5000;
 
+// Registered ahead of rate limiting / the timeout guard so that latency for
+// rejected requests (429s, 504s) is captured too, not just successful 200s.
+leaderboardRouter.use(leaderboardMetricsMiddleware);
 leaderboardRouter.use(rateLimitAnon);
 leaderboardRouter.use(
   requestTimeout(LEADERBOARD_TIMEOUT_MS, {
