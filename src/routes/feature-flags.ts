@@ -39,6 +39,7 @@ featureFlagsRouter.use(
 const featureFlagsQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).default(DEFAULT_PAGE_SIZE),
+  enabled: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
 });
 
 featureFlagsRouter.get("/", async (req, res, next) => {
@@ -49,7 +50,7 @@ featureFlagsRouter.get("/", async (req, res, next) => {
       throw parsed.error;
     }
 
-    const { cursor, limit: rawLimit } = parsed.data;
+    const { cursor, limit: rawLimit, enabled } = parsed.data;
     const limit = clampLimit(rawLimit, DEFAULT_PAGE_SIZE);
 
     const flagsRecord = await abortableRace(
@@ -58,11 +59,13 @@ featureFlagsRouter.get("/", async (req, res, next) => {
     );
 
     // Convert the Record to a sorted array for pagination.
-    const flags = Object.entries(flagsRecord).map(([id, value]) => ({
+    const flags = Object.entries(flagsRecord)
+      .filter(([, value]) => enabled === undefined || value.enabled === enabled)
+      .map(([id, value]) => ({
       id,
       enabled: value.enabled,
       variant: (value.metadata?.variant as string | undefined) ?? null,
-    }));
+      }));
     const sorted = flags.sort((a, b) => b.id.localeCompare(a.id));
 
     const page = paginate(
