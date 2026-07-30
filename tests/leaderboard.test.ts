@@ -71,6 +71,20 @@ describe("GET /api/leaderboard", () => {
     expect(mockGetAddressAggregates).toHaveBeenCalledWith(10, 20);
   });
 
+  it("returns 304 when If-None-Match matches the strong ETag", async () => {
+    mockGetAddressAggregates.mockResolvedValue([sampleEntry]);
+
+    const first = await request(app).get("/api/leaderboard");
+    const second = await request(app)
+      .get("/api/leaderboard")
+      .set("If-None-Match", first.headers.etag);
+
+    expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
+    expect(second.status).toBe(304);
+    expect(second.text).toBe("");
+    expect(second.headers.etag).toBe(first.headers.etag);
+  });
+
   it("rejects limit > 100", async () => {
     const res = await request(app)
       .get("/api/leaderboard")
