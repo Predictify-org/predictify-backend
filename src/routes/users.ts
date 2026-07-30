@@ -238,23 +238,69 @@ usersRouter.get(
       (res.locals.correlationId as string | undefined) ?? getRequestId();
 
     try {
-      stellarAddressSchema.parse(address);
-    } catch {
-      return res.status(400).json({ error: { code: "invalid_address" } });
+      const userId = req.user!.id;
+      const result = await getCurrentUserProfile(userId);
+
+      if (!result.ok) {
+        throw result.error;
+      }
+
+      const profile = result.value;
+      logger.info(
+        {
+          correlationId,
+          userId,
+          stellarAddress: profile.stellarAddress,
+          ...profile.totals,
+        },
+        "user_me_profile_loaded",
+      );
+
+      // Strong ETag on the profile payload; 304 if client already has it.
+      const responsePayload = { data: profile };
+      if (conditionalGet(responsePayload, req, res)) return;
+      return res.json(responsePayload);
+    } catch (e) {
+      return next(e);
     }
   },
 );
 
-    const querySchema = z.object({
-      status: z.enum(["pending", "confirmed", "won", "lost", "claimed"]).optional(),
-      cursor: z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
-        .optional(),
-      limit: z.coerce.number().int().min(1).max(100),
-    });
+// ---------------------------------------------------------------------------
+// GET /api/users/:address/predictions
+// ---------------------------------------------------------------------------
 
-    const query = querySchema.parse({ status, cursor, limit });
+/**
+ * Returns a cursor-paginated list of predictions for the given Stellar address.
+ *
+ * Path parameters:
+ *   - :address — a valid 56-char Stellar G-address
+ *
+ * Query parameters:
+ *   - status  (optional) — filter by prediction status enum
+ *   - cursor  (optional) — opaque base64url token from the previous page's `nextCursor`
+ *   - limit   (optional, default 20, max 100) — page size
+ *
+ * Response:
+ *   { data: UserPredictionRow[], nextCursor: string | null }
+ *
+ * Caching:
+ *   Strong ETag on the page payload; clients may revalidate with If-None-Match
+ *   and receive 304 Not Modified when the page is unchanged.
+ *
+ * Errors:
+ *   400 invalid_address  — path param is not a valid G… Stellar address
+ *   400 validation_error — query params fail the zod schema
+ *   404 not_found        — no user row for that address
+ */
+usersRouter.get(
+  "/:address/predictions",
+  usersRateLimit,
+  async (req: Request, res: Response, next: NextFunction) => {
+    // Prefer the access-log correlation ID; fall back to ALS for non-route callers.
+    const correlationId =
+      (res.locals.correlationId as string | undefined) ?? getRequestId();
+    const reqId = correlationId;
 
     try {
       // Validate the path parameter :address at the route boundary before touching the DB.
