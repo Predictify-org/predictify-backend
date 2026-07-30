@@ -39,6 +39,7 @@ import { sessionsRouter } from "./routes/me/sessions";
 import { notificationsRouter } from "./routes/notifications";
 import { socialRouter } from "./routes/social";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
+import { createWebhooksRouter } from "./routes/webhooks";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
@@ -62,6 +63,9 @@ import { quotaRequestsRouter } from "./routes/quota/requests";
 import { startSlowQueryAlerter, stopSlowQueryAlerter } from "./workers/slowQueryAlerter";
 import { reportsRouter } from "./routes/reports";
 import { gracefulShutdown } from "./lifecycle/shutdown";
+import { DrizzleWebhookStore } from "./services/drizzleWebhookStore";
+import type { IWebhookDispatcher } from "./services/webhookDispatcher";
+import type { WebhookStore } from "./services/webhookStore";
 
 const docsEnabled = env.NODE_ENV !== "production" || process.env.ENABLE_DOCS === "true";
 
@@ -81,7 +85,7 @@ function sanitizeRequestId(raw: string): string | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-export function createApp(_options: CreateAppOptions = {}): express.Express {
+export function createApp(options: CreateAppOptions = {}): express.Express {
   const app = express();
 
   const webhookStore: WebhookStore = options.webhooks?.store ?? new DrizzleWebhookStore(db);
