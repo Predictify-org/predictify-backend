@@ -37,6 +37,19 @@ describe("Integration Test: /api/health", () => {
   });
 
   describe("GET /api/health", () => {
+    it("serves the health payload through the mounted API route", async () => {
+      const res = await request(app)
+        .get("/api/health")
+        .set("x-request-id", "integration-health-823");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        status: "ok",
+        state: { mode: "active", maintenance: false },
+      });
+      expect(res.headers["x-request-id"]).toBe("integration-health-823");
+    });
+
     it("returns 200 with default health state when no audit log mutations exist", async () => {
       const res = await request(app).get("/api/health");
 
