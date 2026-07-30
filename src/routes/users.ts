@@ -331,6 +331,20 @@ usersRouter.get(
 
     // ── 2. Service call ──────────────────────────────────────────────────
       // Validate and coerce query parameters with zod.
+      { reqId, stellarAddress: req.params.stellarAddress },
+        "user_profile_validation_failed",
+      );
+      return res.status(400).json({
+        error: {
+          code: "validation_error",
+          message: "invalid stellar address",
+          requestId: reqId,
+        },
+      });
+    }
+
+    // ── 2. Service call ──────────────────────────────────────────────────
+      // Validate and coerce query parameters with zod.
       const queryParse = userPredictionsQuerySchema.safeParse(req.query);
       if (!queryParse.success) {
         logger.warn(
@@ -345,6 +359,64 @@ usersRouter.get(
             requestId: reqId,
           },
         });
+    const { status, cursor, limit: rawLimit } = queryParse.data;
+    // clampLimit is a belt-and-suspenders guard; zod already enforces 1–100.
+    const limit = clampLimit(rawLimit);
+
+    logger.debug({ reqId, address, status, limit, hasCursor: !!cursor }, "predictions_request");
+
+    const user = await getUserByAddress(address);
+    if (!user) {
+      logger.debug({ reqId, address }, "predictions_user_not_found");
+      return res.status(404).json({ error: { code: "not_found", requestId: reqId } });
+    }
+
+    const page = await getUserPredictions(user.id, { status, limit, cursor });
+    const user = await getUserByAddress(address);
+    if (!user) {
+      logger.debug({ reqId, address }, "predictions_user_not_found");
+      return res.status(404).json({ error: { code: "not_found", requestId: reqId } });
+    }
+
+    const page = await getUserPredictions(user.id, { status, limit, cursor });
+
+    logger.info(
+      { reqId, address, userId: user.id, count: page.data.length, hasNext: !!page.nextCursor },
+      "predictions_page_served",
+    );
+
+    return res.json({ data: page.data, nextCursor: page.nextCursor });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+usersRouter.get(
+  "/:stellarAddress/profile",
+  async (req, res, next) => {
+    const reqId = getRequestId();
+
+    const parseResult = stellarAddressSchema.safeParse(req.params.stellarAddress);
+    if (!parseResult.success) {
+      logger.warn(
+        { reqId, stellarAddress: req.params.stellarAddress, issues: parseResult.error.issues },
+        "user_profile_validation_failed",
+      );
+      return next(
+        RouteErrorFactory.badRequest(parseResult.error.issues[0]?.message ?? "invalid stellar address"),
+      );
+    }
+
+    const stellarAddress = parseResult.data;
+
+    try {
+      logger.debug({ reqId, stellarAddress }, "user_profile_lookup");
+
+      const profile = await getUserProfile(stellarAddress);
+
+      if (!profile) {
+        logger.debug({ reqId, stellarAddress }, "user_profile_not_found");
+        throw RouteErrorFactory.notFound("no user found with that stellar address");
       }
 
       const { status, cursor, limit: rawLimit } = queryParse.data;

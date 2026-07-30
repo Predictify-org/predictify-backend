@@ -74,10 +74,13 @@ module.exports = {
       statements: 90,
     },
   },
-  // Separate E2E tests from unit tests
+  // Separate E2E and Testcontainers-backed integration tests from unit tests.
+  // Integration tests need the Postgres container started by
+  // jest.integration.config.js — run them with `npm run test:integration`.
   testPathIgnorePatterns: [
     "/node_modules/",
     "/dist/",
+    "/tests/integration/",
   ],
   // Increase timeout for E2E tests
   testTimeout: 10000, // 10 seconds default, E2E tests override this

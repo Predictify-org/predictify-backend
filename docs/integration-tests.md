@@ -20,6 +20,17 @@ This uses the `jest.preset.integration.js` preset which:
 3. Runs test files matching `tests/integration/**/*.test.ts`
 4. Stops and removes the container (global teardown)
 
+## Suites
+
+| File | Covers |
+|---|---|
+| `tests/integration/example.test.ts` | Pool configuration, raw SQL, Drizzle access to the migrated schema |
+| `tests/integration/users.test.ts` | `/api/users` end-to-end: `GET /me`, `GET /:address/predictions`, `GET /:addr/portfolio`, `GET /:address/profile` |
+
+`users.test.ts` mounts `usersRouter` and `userPortfolioRouter` on a bare Express app in the same order as `src/index.ts` (plus the request-context middleware and the global error handler) and drives them through `supertest`. Nothing is mocked: JWTs are minted with the real `signAccessToken`, and every read hits the container database seeded through Drizzle. It asserts auth behaviour (403 for anonymous, forged, and orphaned-subject tokens), query validation, 404s, status filtering, keyset pagination (pages are disjoint and exhaustive; a tampered cursor restarts at page one) and cross-user isolation.
+
+Modules under test open their own `pg.Pool` (`src/db/client` and `src/middleware/requireAuth`), so the suite subclasses `pg.Pool` to track and close every instance in `afterAll` — without that, idle clients keep the Jest worker alive after the tests finish.
+
 ## Writing integration tests
 
 Place test files in `tests/integration/` with the `*.test.ts` extension.
