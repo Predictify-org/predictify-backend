@@ -15,7 +15,8 @@ This implementation extends the `/api/leaderboard` endpoint to support time-peri
 All parameters are validated using Zod with type-safe enums:
 - `period`: One of `all-time`, `monthly`, `weekly` (validated enum)
 - `limit`: 1-100 (default: 50)
-- `offset`: Non-negative integer (default: 0)
+- `offset`: Non-negative integer (default: 0) — legacy; prefer `cursor`
+- `cursor`: Opaque pagination token from a previous response's `nextCursor` (optional)
 - `refresh`: Boolean flag for manual refresh (default: false)
 
 Invalid periods return a `400 Bad Request` error.
@@ -48,7 +49,8 @@ Returns paginated leaderboard entries for a specified period.
 |-----------|------|---------|-------------|
 | `period` | enum | `all-time` | `all-time`, `monthly`, `weekly` |
 | `limit` | number | 50 | 1-100 |
-| `offset` | number | 0 | ≥ 0 |
+| `offset` | number | 0 | ≥ 0 (legacy; ignored when `cursor` is provided) |
+| `cursor` | string | — | Opaque token from previous response's `nextCursor` |
 | `refresh` | boolean | false | true/false |
 
 **Response (200 OK):**
@@ -64,6 +66,7 @@ Returns paginated leaderboard entries for a specified period.
       "rank": 1
     }
   ],
+  "nextCursor": "djF8MTApMDAwMDAwMDAwMXx1c2VyLTEyMw",
   "meta": {
     "limit": 50,
     "offset": 0,
@@ -74,15 +77,25 @@ Returns paginated leaderboard entries for a specified period.
 }
 ```
 
+The `nextCursor` field is present when there are additional pages.  Pass its value
+as `?cursor=` in the next request to retrieve the following page.  When there are
+no more results `nextCursor` is omitted.
+
 **Example Requests:**
 ```bash
-# Get all-time leaderboard (default)
+# Get all-time leaderboard (default) — cursor-based first page
 GET /api/leaderboard
 
 # Get monthly leaderboard
 GET /api/leaderboard?period=monthly
 
-# Get weekly leaderboard with custom pagination
+# Get weekly leaderboard (first page, limit 25)
+GET /api/leaderboard?period=weekly&limit=25
+
+# Cursor-based pagination — use nextCursor from previous response
+GET /api/leaderboard?cursor=v1|10|0000000001|user-123
+
+# Legacy offset-based pagination (still supported)
 GET /api/leaderboard?period=weekly&limit=25&offset=50
 
 # Force refresh of weekly data
@@ -190,7 +203,8 @@ WHERE total_predictions > 0
 
 ### Caching Strategy
 - **Cache keys** include period, limit, and offset to serve different paginations separately
-- **TTL of 5 minutes** balances freshness with database load
+- **First page (no cursor)** is cached under `leaderboard:{period}:{limit}:0` (TTL = 5 min)
+- **Cursor-based pages** are not cached (each cursor is unique, making caching ineffective)
 - **Automatic invalidation** via `invalidatePeriodCache()` after view refresh
 - **Resilient design** continues serving if cache fails (cache write errors logged but not thrown)
 

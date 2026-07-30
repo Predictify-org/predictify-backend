@@ -7,6 +7,10 @@ import * as leaderboardService from "../../services/leaderboardService";
 
 // Mock the service
 jest.mock("../../services/leaderboardService");
+jest.mock("../../utils/cursor", () => {
+  const actual = jest.requireActual("../../utils/cursor");
+  return { ...actual };
+});
 
 // Mock the logger to avoid noise in test output
 jest.mock("../../config/logger", () => ({
@@ -31,7 +35,7 @@ describe("Leaderboard Routes", () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     app = express();
     app.use(express.json());
     app.use("/api/leaderboard", leaderboardRouter);
@@ -39,9 +43,10 @@ describe("Leaderboard Routes", () => {
 
   describe("GET /api/leaderboard", () => {
     it("should return leaderboard with default parameters", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app).get("/api/leaderboard");
 
@@ -57,37 +62,39 @@ describe("Leaderboard Routes", () => {
     });
 
     it("should accept period parameter", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ period: "monthly" });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboard).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPage).toHaveBeenCalledWith(
         50,
-        0,
         "monthly",
+        undefined,
       );
       expect(response.body.meta.period).toBe("monthly");
     });
 
     it("should accept weekly period", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ period: "weekly" });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboard).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPage).toHaveBeenCalledWith(
         50,
-        0,
         "weekly",
+        undefined,
       );
       expect(response.body.meta.period).toBe("weekly");
     });
@@ -104,19 +111,20 @@ describe("Leaderboard Routes", () => {
     });
 
     it("should accept limit parameter", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ limit: 25 });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboard).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPage).toHaveBeenCalledWith(
         25,
-        0,
         "all-time",
+        undefined,
       );
       expect(response.body.meta.limit).toBe(25);
     });
@@ -195,59 +203,68 @@ describe("Leaderboard Routes", () => {
 
     it("should support refresh parameter with all-time period", async () => {
       (
-        leaderboardService.getLeaderboardWithRefresh as jest.Mock
-      ).mockResolvedValueOnce([mockLeaderboardEntry]);
+        leaderboardService.getLeaderboardPageWithRefresh as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ refresh: true });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboardWithRefresh).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPageWithRefresh).toHaveBeenCalledWith(
         50,
-        0,
         "all-time",
+        undefined,
       );
       expect(response.body.meta.refresh).toBe(true);
     });
 
     it("should support refresh parameter with monthly period", async () => {
       (
-        leaderboardService.getLeaderboardWithRefresh as jest.Mock
-      ).mockResolvedValueOnce([mockLeaderboardEntry]);
+        leaderboardService.getLeaderboardPageWithRefresh as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ refresh: true, period: "monthly" });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboardWithRefresh).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPageWithRefresh).toHaveBeenCalledWith(
         50,
-        0,
         "monthly",
+        undefined,
       );
     });
 
     it("should support refresh parameter with weekly period", async () => {
       (
-        leaderboardService.getLeaderboardWithRefresh as jest.Mock
-      ).mockResolvedValueOnce([mockLeaderboardEntry]);
+        leaderboardService.getLeaderboardPageWithRefresh as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app)
         .get("/api/leaderboard")
         .query({ refresh: true, period: "weekly" });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboardWithRefresh).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardPageWithRefresh).toHaveBeenCalledWith(
         50,
-        0,
         "weekly",
+        undefined,
       );
     });
 
     it("should return empty array when no results", async () => {
-      (leaderboardService.getLeaderboard as jest.Mock).mockResolvedValueOnce(
-        [],
+      (leaderboardService.getLeaderboardPage as jest.Mock).mockResolvedValueOnce(
+        { entries: [], nextCursor: null },
       );
 
       const response = await request(app).get("/api/leaderboard");
@@ -258,7 +275,7 @@ describe("Leaderboard Routes", () => {
     });
 
     it("should handle service errors", async () => {
-      (leaderboardService.getLeaderboard as jest.Mock).mockRejectedValueOnce(
+      (leaderboardService.getLeaderboardPage as jest.Mock).mockRejectedValueOnce(
         new Error("Database error"),
       );
 
@@ -268,7 +285,7 @@ describe("Leaderboard Routes", () => {
     });
 
     it("should coerce string parameters to correct types", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
+      (leaderboardService.getLeaderboardWithRefresh as any).mockResolvedValueOnce([
         mockLeaderboardEntry,
       ]);
 
@@ -277,7 +294,7 @@ describe("Leaderboard Routes", () => {
         .query({ limit: "25", offset: "50", refresh: "true" });
 
       expect(response.status).toBe(200);
-      expect(leaderboardService.getLeaderboard).toHaveBeenCalledWith(
+      expect(leaderboardService.getLeaderboardWithRefresh).toHaveBeenCalledWith(
         25,
         50,
         "all-time",
@@ -438,9 +455,10 @@ describe("Leaderboard Routes", () => {
 
   describe("ETag / 304 conditional GET for GET /api/leaderboard", () => {
     it("returns 200 with ETag and Cache-Control on first request", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const res = await request(app).get("/api/leaderboard");
 
@@ -450,16 +468,18 @@ describe("Leaderboard Routes", () => {
     });
 
     it("returns 304 when If-None-Match matches current ETag", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const first = await request(app).get("/api/leaderboard");
       const etag = first.headers["etag"] as string;
 
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const second = await request(app)
         .get("/api/leaderboard")
@@ -470,9 +490,10 @@ describe("Leaderboard Routes", () => {
     });
 
     it("returns 200 when If-None-Match does not match", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const res = await request(app)
         .get("/api/leaderboard")
@@ -483,16 +504,18 @@ describe("Leaderboard Routes", () => {
     });
 
     it("returns 304 with unquoted (bare hash) If-None-Match", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const first = await request(app).get("/api/leaderboard");
       const bareHash = etagHash(first.headers["etag"] as string);
 
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const second = await request(app)
         .get("/api/leaderboard")
@@ -502,45 +525,51 @@ describe("Leaderboard Routes", () => {
     });
 
     it("ETag is stable across repeated requests for the same data", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
       const r1 = await request(app).get("/api/leaderboard");
 
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
       const r2 = await request(app).get("/api/leaderboard");
 
       expect(r1.headers["etag"]).toBe(r2.headers["etag"]);
     });
 
     it("ETag changes when leaderboard data changes", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
       const r1 = await request(app).get("/api/leaderboard");
 
       const changedEntry = { ...mockLeaderboardEntry, total_predictions: 200 };
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        changedEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [changedEntry],
+        nextCursor: null,
+      });
       const r2 = await request(app).get("/api/leaderboard");
 
       expect(r1.headers["etag"]).not.toBe(r2.headers["etag"]);
     });
 
     it("304 still includes ETag header", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const first = await request(app).get("/api/leaderboard");
       const etag = first.headers["etag"] as string;
 
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const second = await request(app)
         .get("/api/leaderboard")
@@ -602,11 +631,132 @@ describe("Leaderboard Routes", () => {
     });
   });
 
+  describe("GET /api/leaderboard cursor pagination", () => {
+    it("should return nextCursor when more pages exist", async () => {
+      (
+        leaderboardService.getLeaderboardPage as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry, { ...mockLeaderboardEntry, rank: 2 }],
+        nextCursor: "djF8MTB8MDAwMDAwMDAwMnx1c2VyLTIzNA",
+      });
+
+      const response = await request(app).get("/api/leaderboard");
+
+      expect(response.status).toBe(200);
+      expect(response.body.nextCursor).toBe(
+        "djF8MTB8MDAwMDAwMDAwMnx1c2VyLTIzNA",
+      );
+    });
+
+    it("should omit nextCursor when on last page", async () => {
+      (
+        leaderboardService.getLeaderboardPage as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
+
+      const response = await request(app).get("/api/leaderboard");
+
+      expect(response.status).toBe(200);
+      expect(response.body.nextCursor).toBeUndefined();
+    });
+
+    it("should forward cursor parameter to service", async () => {
+      (
+        leaderboardService.getLeaderboardPage as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
+
+      const testCursor =
+        "djF8MTB8MDAwMDAwMDAwMnx1c2VyLTIzNA";
+      await request(app)
+        .get("/api/leaderboard")
+        .query({ cursor: testCursor });
+
+      expect(leaderboardService.getLeaderboardPage).toHaveBeenCalledWith(
+        50,
+        "all-time",
+        testCursor,
+      );
+    });
+
+    it("should reject empty cursor string", async () => {
+      const response = await request(app)
+        .get("/api/leaderboard")
+        .query({ cursor: "" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("validation_error");
+    });
+
+    it("should use getLeaderboardPage for first page (no cursor, offset=0)", async () => {
+      (
+        leaderboardService.getLeaderboardPage as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
+
+      await request(app).get("/api/leaderboard");
+
+      expect(leaderboardService.getLeaderboardPage).toHaveBeenCalled();
+      expect(leaderboardService.getLeaderboard).not.toHaveBeenCalled();
+    });
+
+    it("should use getLeaderboard for explicit non-zero offset (backward compat)", async () => {
+      (
+        leaderboardService.getLeaderboard as jest.Mock
+      ).mockResolvedValueOnce([mockLeaderboardEntry]);
+
+      await request(app)
+        .get("/api/leaderboard")
+        .query({ offset: 50 });
+
+      expect(leaderboardService.getLeaderboard).toHaveBeenCalledWith(
+        50,
+        50,
+        "all-time",
+      );
+      expect(leaderboardService.getLeaderboardPage).not.toHaveBeenCalled();
+    });
+
+    it("should use cursor path with refresh=true", async () => {
+      (
+        leaderboardService.getLeaderboardPageWithRefresh as jest.Mock
+      ).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
+
+      await request(app)
+        .get("/api/leaderboard")
+        .query({ refresh: true });
+
+      expect(
+        leaderboardService.getLeaderboardPageWithRefresh,
+      ).toHaveBeenCalled();
+    });
+
+    it("should handle cursor errors gracefully", async () => {
+      (
+        leaderboardService.getLeaderboardPage as jest.Mock
+      ).mockRejectedValueOnce(new Error("Cursor error"));
+
+      const response = await request(app).get("/api/leaderboard");
+
+      expect(response.status).toBe(500);
+    });
+  });
+
   describe("Response format validation", () => {
     it("should include all required meta fields", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app).get("/api/leaderboard");
 
@@ -618,10 +768,10 @@ describe("Leaderboard Routes", () => {
     });
 
     it("should return data as array in meta response", async () => {
-      (leaderboardService.getLeaderboard as any).mockResolvedValueOnce([
-        mockLeaderboardEntry,
-        mockLeaderboardEntry,
-      ]);
+      (leaderboardService.getLeaderboardPage as any).mockResolvedValueOnce({
+        entries: [mockLeaderboardEntry, mockLeaderboardEntry],
+        nextCursor: null,
+      });
 
       const response = await request(app).get("/api/leaderboard");
 
