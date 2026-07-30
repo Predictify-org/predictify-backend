@@ -39,6 +39,7 @@ export const defaultAdminRouteItems: readonly AdminRouteItem[] = [
   { id: "POST /api/admin/markets/{id}/feature", method: "POST", path: "/api/admin/markets/{id}/feature", summary: "Feature a market" },
   { id: "DELETE /api/admin/markets/{id}/feature", method: "DELETE", path: "/api/admin/markets/{id}/feature", summary: "Remove a featured market" },
   { id: "POST /api/admin/markets/{id}/force-finalize", method: "POST", path: "/api/admin/markets/{id}/force-finalize", summary: "Force finalize a market" },
+  { id: "POST /api/admin/notifications/broadcast", method: "POST", path: "/api/admin/notifications/broadcast", summary: "Broadcast notification to all users" },
   { id: "GET /api/admin/plugins", method: "GET", path: "/api/admin/plugins", summary: "List plugins" },
   { id: "POST /api/admin/plugins", method: "POST", path: "/api/admin/plugins", summary: "Create a plugin" },
   { id: "GET /api/admin/rate-limit/inspect/{address}", method: "GET", path: "/api/admin/rate-limit/inspect/{address}", summary: "Inspect rate limit usage" },

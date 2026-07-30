@@ -793,6 +793,50 @@ components:
         markAllAsRead:
           type: boolean
       additionalProperties: false
+    BroadcastNotificationResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            recipientCount:
+              type: integer
+              minimum: 0
+            notificationCount:
+              type: integer
+              minimum: 0
+          required:
+            - recipientCount
+            - notificationCount
+      required:
+        - data
+    BroadcastNotificationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Maintenance Announcement
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: Scheduled maintenance will occur at 02:00 UTC.
+        type:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: system_broadcast
+        data:
+          type: object
+          additionalProperties:
+            nullable: true
+          example:
+            severity: info
+      required:
+        - title
+        - body
     UserListRow:
       type: object
       properties:
@@ -1135,53 +1179,6 @@ components:
       required:
         - totalCount
         - byAction
-    AuditLogEntry:
-      type: object
-      description: A single audit log entry for a wallet address.
-      properties:
-        id:
-          type: string
-          format: uuid
-        action:
-          type: string
-          description: Action identifier, e.g. "auth.login" or "market.create"
-        walletAddress:
-          type: string
-          nullable: true
-          description: Stellar wallet address of the actor
-        ip:
-          type: string
-          description: IP address of the originating request
-        correlationId:
-          type: string
-          description: Correlation ID for cross-log tracing
-        rateLimitContext:
-          nullable: true
-          description: Optional rate-limit snapshot at request time
-        createdAt:
-          type: string
-          format: date-time
-      required:
-        - id
-        - action
-        - ip
-        - correlationId
-        - createdAt
-    UserAuditPage:
-      type: object
-      description: A paginated page of audit log entries for a single user.
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/AuditLogEntry'
-        nextCursor:
-          type: string
-          nullable: true
-          description: Opaque cursor for the next page, or null if this is the last page.
-      required:
-        - data
-        - nextCursor
     PluginView:
       type: object
       properties:
@@ -2514,6 +2511,7 @@ paths:
                       requestId: req_abc123
   /api/markets/{id}/comments:
     get:
+      operationId: getMarketComments
       tags:
         - Markets
         - Comments
@@ -2580,6 +2578,7 @@ paths:
                 $ref: '#/components/schemas/ValidationErrorBody'
   /api/comments:
     get:
+      operationId: listComments
       tags:
         - Comments
       summary: List comments (root endpoint)
@@ -2640,6 +2639,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ValidationErrorBody'
     post:
+      operationId: createComment
       tags:
         - Comments
       summary: Create a comment
@@ -2736,6 +2736,7 @@ paths:
                       requestId: req_abc123
   /api/predictions/claim:
     post:
+      operationId: claimPrediction
       tags:
         - Predictions
       summary: Claim winnings after market resolution
@@ -3498,6 +3499,51 @@ paths:
                 $ref: '#/components/schemas/ValidationErrorBody'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/notifications/broadcast:
+    post:
+      operationId: adminBroadcastNotification
+      tags:
+        - Admin
+        - Notifications
+      summary: Broadcast notification to all users (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BroadcastNotificationRequest'
+      responses:
+        '201':
+          description: Notification successfully broadcast to users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BroadcastNotificationResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '403':
+          description: Forbidden — caller is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '429':
+          description: Rate limit exceeded
           content:
             application/json:
               schema:
@@ -4313,122 +4359,6 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '429':
-          description: Rate limit exceeded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-  /api/audit/user/{addr}:
-    get:
-      operationId: getUserAuditHistory
-      tags:
-        - Audit
-      summary: Per-user audit history
-      description: >
-        Returns paginated audit log entries for the given Stellar wallet
-        address, ordered by `(created_at DESC, id DESC)`.
-
-        Authenticated users may only query their own address. Admins
-        (`role: "admin"`) may query any address.
-
-        Pagination uses the same opaque keyset cursor as the admin audit
-        endpoint — always use the `nextCursor` value from the previous
-        response; never construct a cursor manually.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: addr
-          required: true
-          schema:
-            type: string
-            pattern: '^G[A-Z2-7]{55}$'
-          description: Stellar public key (G + 55 base-32 uppercase characters)
-        - in: query
-          name: cursor
-          required: false
-          schema:
-            type: string
-          description: Opaque pagination cursor from a previous response
-        - in: query
-          name: limit
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-          description: Records per page (1–100, default 20)
-        - in: query
-          name: action
-          required: false
-          schema:
-            type: string
-          description: Filter by exact action string (e.g. "auth.login")
-        - in: query
-          name: startDate
-          required: false
-          schema:
-            type: string
-            format: date-time
-          description: Inclusive lower-bound on createdAt (ISO 8601)
-        - in: query
-          name: endDate
-          required: false
-          schema:
-            type: string
-            format: date-time
-          description: Inclusive upper-bound on createdAt (ISO 8601)
-      responses:
-        '200':
-          description: Paginated audit log for the requested address
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserAuditPage'
-              examples:
-                singleEntry:
-                  summary: One log entry, no further pages
-                  value:
-                    data:
-                      - id: 11111111-1111-1111-1111-111111111111
-                        action: auth.login
-                        walletAddress: GAHK7EYR7AQ5B56K2RRYUWWC7EJ5CWWWURC2Q4GQRHBDQY7ZLMQVB6TF
-                        ip: 203.0.113.42
-                        correlationId: abc-123
-                        rateLimitContext: null
-                        createdAt: '2026-07-01T12:00:00.000Z'
-                    nextCursor: null
-                emptyPage:
-                  summary: No logs for this address
-                  value:
-                    data: []
-                    nextCursor: null
-        '400':
-          description: Invalid wallet address format
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '401':
-          description: Missing or invalid Bearer token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '403':
-          description: Authenticated user is not authorised to view this address
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '422':
-          description: Invalid query parameters
           content:
             application/json:
               schema:

@@ -1089,6 +1089,7 @@ const MarketComment = z
 registry.registerPath({
   method: "get",
   path: "/api/markets/{id}/comments",
+  operationId: "getMarketComments",
   tags: ["Markets", "Comments"],
   summary: "List comments for a market with cursor pagination",
   description:
@@ -1135,6 +1136,7 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/api/comments",
+  operationId: "listComments",
   tags: ["Comments"],
   summary: "List comments (root endpoint)",
   description:
@@ -1215,6 +1217,7 @@ const CreateCommentResponse = z
 registry.registerPath({
   method: "post",
   path: "/api/comments",
+  operationId: "createComment",
   tags: ["Comments"],
   summary: "Create a comment",
   description:
@@ -1353,6 +1356,7 @@ const ClaimResponse = z
 registry.registerPath({
   method: "post",
   path: "/api/predictions/claim",
+  operationId: "claimPrediction",
   tags: ["Predictions"],
   summary: "Claim winnings after market resolution",
   description:
@@ -2090,6 +2094,64 @@ registry.registerPath({
     },
     401: {
       description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+const BroadcastNotificationRequest = z
+  .object({
+    title: z.string().min(1).max(255).openapi({ example: "Maintenance Announcement" }),
+    body: z.string().min(1).max(2000).openapi({ example: "Scheduled maintenance will occur at 02:00 UTC." }),
+    type: z.string().min(1).max(64).optional().openapi({ example: "system_broadcast" }),
+    data: z.record(z.unknown()).optional().openapi({ example: { severity: "info" } }),
+  })
+  .openapi("BroadcastNotificationRequest");
+
+const BroadcastNotificationResponse = z
+  .object({
+    data: z.object({
+      recipientCount: z.number().int().nonnegative(),
+      notificationCount: z.number().int().nonnegative(),
+    }),
+  })
+  .openapi("BroadcastNotificationResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/api/admin/notifications/broadcast",
+  operationId: "adminBroadcastNotification",
+  tags: ["Admin", "Notifications"],
+  summary: "Broadcast notification to all users (admin only)",
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: BroadcastNotificationRequest },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Notification successfully broadcast to users",
+      content: {
+        "application/json": { schema: BroadcastNotificationResponse },
+      },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    403: {
+      description: "Forbidden — caller is not an admin",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    422: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
       content: { "application/json": { schema: ErrorBody } },
     },
   },
