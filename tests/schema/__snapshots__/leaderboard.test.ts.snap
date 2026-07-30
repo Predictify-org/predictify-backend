@@ -1,0 +1,50 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Leaderboard API Schema Stability should maintain a stable response shape for GET /api/leaderboard 1`] = `
+{
+  "data": [],
+  "meta": {
+    "count": 0,
+    "limit": 50,
+    "offset": 0,
+    "period": "all-time",
+    "refresh": false,
+  },
+}
+`;
+
+exports[`Leaderboard API Schema Stability should respond with 200 even when x-correlation-id header is present 1`] = `
+{
+  "data": [],
+  "meta": {
+    "count": 0,
+    "limit": 50,
+    "offset": 0,
+    "period": "all-time",
+    "refresh": false,
+  },
+}
+`;
+
+exports[`Leaderboard API Schema Stability should respond with 400 for invalid query parameters 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "too_small",
+        "exact": false,
+        "inclusive": true,
+        "message": "limit must be between 1 and 100",
+        "minimum": 1,
+        "path": [
+          "limit",
+        ],
+        "type": "number",
+      },
+    ],
+    "message": "limit must be between 1 and 100",
+    "requestId": "unknown",
+  },
+}
+`;
