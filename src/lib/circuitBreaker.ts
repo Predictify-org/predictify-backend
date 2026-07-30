@@ -5,12 +5,13 @@ export enum CircuitState {
 }
 
 export interface CircuitBreakerOptions {
-  failureThreshold?: number;
-  resetTimeoutMs?: number;
+  failureThreshold?: number; // Number of failures before opening
+  cooldownPeriodMs?: number; // Time in ms before attempting half-open
 }
 
 export class CircuitBreakerOpenError extends Error {
-  constructor(message = 'Service temporarily unavailable due to open circuit breaker') {
+  public statusCode: number = 503;
+  constructor(message: string = 'Service unavailable: Circuit breaker is OPEN') {
     super(message);
     this.name = 'CircuitBreakerOpenError';
   }
@@ -18,19 +19,21 @@ export class CircuitBreakerOpenError extends Error {
 
 export class CircuitBreaker {
   private state: CircuitState = CircuitState.CLOSED;
-  private failureCount = 0;
-  private readonly failureThreshold: number;
-  private readonly resetTimeoutMs: number;
+  private failureCount: number = 0;
   private lastStateChange: number = Date.now();
+  private readonly failureThreshold: number;
+  private readonly cooldownPeriodMs: number;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.failureThreshold = options.failureThreshold ?? 5;
-    this.resetTimeoutMs = options.resetTimeoutMs ?? 10000;
+    this.cooldownPeriodMs = options.cooldownPeriodMs ?? 30000; // Default 30 seconds
   }
 
   public getState(): CircuitState {
-    if (this.state === CircuitState.OPEN && Date.now() - this.lastStateChange >= this.resetTimeoutMs) {
-      this.state = CircuitState.HALF_OPEN;
+    if (this.state === CircuitState.OPEN) {
+      if (Date.now() - this.lastStateChange >= this.cooldownPeriodMs) {
+        this.state = CircuitState.HALF_OPEN;
+      }
     }
     return this.state;
   }
@@ -55,7 +58,6 @@ export class CircuitBreaker {
   private onSuccess(): void {
     this.failureCount = 0;
     this.state = CircuitState.CLOSED;
-    this.lastStateChange = Date.now();
   }
 
   private onFailure(): void {
@@ -69,6 +71,11 @@ export class CircuitBreaker {
   public reset(): void {
     this.state = CircuitState.CLOSED;
     this.failureCount = 0;
-    this.lastStateChange = Date.now();
   }
 }
+
+// Global/Per-endpoint instances
+export const fingerprintCircuitBreaker = new CircuitBreaker({
+  failureThreshold: 3,
+  cooldownPeriodMs: 15000,
+});
