@@ -48,6 +48,7 @@ import { searchRouter } from "./routes/search";
 import { sessionsRouter } from "./routes/me/sessions";
 import { referralsRouter } from "./routes/referrals";
 import { notificationsRouter } from "./routes/notifications";
+import { notificationsHealthRouter } from "./routes/notifications/health";
 import { socialRouter } from "./routes/social";
 import { webhooksRouter } from "./routes/webhooks";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
@@ -192,6 +193,7 @@ export function createApp(): express.Express {
   app.use("/api/rate-limit", rateLimitRouter);
   app.use("/api/search", searchRouter);
   app.use("/api/quota/requests", quotaRequestsRouter);
+  app.use("/api/notifications/health", notificationsHealthRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/webhooks/health", webhooksHealthRouter);
   app.use("/api/users/health", usersHealthRouter);
