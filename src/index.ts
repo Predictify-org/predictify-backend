@@ -52,6 +52,7 @@ import { notificationsHealthRouter } from "./routes/notifications/health";
 import { socialRouter } from "./routes/social";
 import { webhooksRouter } from "./routes/webhooks";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
+import { createWebhooksRouter } from "./routes/webhooks";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
@@ -83,7 +84,9 @@ import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
 import { gracefulShutdown } from "./lifecycle/shutdown";
-import { perUserConcurrency } from "./middleware/perUserConcurrency";
+import { DrizzleWebhookStore } from "./services/drizzleWebhookStore";
+import type { IWebhookDispatcher } from "./services/webhookDispatcher";
+import type { WebhookStore } from "./services/webhookStore";
 
 
 const docsEnabled =
@@ -99,7 +102,7 @@ function sanitizeRequestId(raw: string): string | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-export function createApp(): express.Express {
+export function createApp(options: CreateAppOptions = {}): express.Express {
   const app = express();
 
   app.set("etag", false);
