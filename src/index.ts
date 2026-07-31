@@ -87,6 +87,7 @@ import { gracefulShutdown } from "./lifecycle/shutdown";
 import { DrizzleWebhookStore } from "./services/drizzleWebhookStore";
 import type { IWebhookDispatcher } from "./services/webhookDispatcher";
 import type { WebhookStore } from "./services/webhookStore";
+import { warmAuditCache } from "./services/auditCacheWarm";
 
 
 const docsEnabled =
@@ -276,6 +277,10 @@ if (require.main === module) {
         if (env.ENABLE_DOCS) {
           logger.info(`Swagger UI available at http://localhost:${env.PORT}/docs`);
         }
+        
+        warmAuditCache().catch((err) => {
+          logger.error({ err }, "Unhandled error in warmAuditCache");
+        });
       });
 
       const handleShutdown = async (signal: string) => {
