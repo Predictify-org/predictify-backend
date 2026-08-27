@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as path from "path";
+import * as yaml from "js-yaml";
 import { resetOpenApiCache, getOpenApiSpec } from "../src/openapi/builder";
 
 type Method = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
@@ -31,6 +34,7 @@ const EXPECTED_ROUTES: RouteEntry[] = [
   { method: "get", path: "/api/admin/audit" },
   { method: "get", path: "/api/audit/counts" },
   { method: "get", path: "/api/admin/users/{address}" },
+  { method: "post", path: "/api/admin/users/{address}/impersonate" },
   { method: "get", path: "/api/admin/feature-flags" },
   { method: "post", path: "/api/admin/feature-flags" },
   { method: "get", path: "/api/admin/feature-flags/{key}" },
@@ -150,8 +154,45 @@ function main(): number {
     exitCode = 1;
   }
 
+  // The checked-in YAML must be byte-for-byte reproducible from the registry.
+  // This catches manual edits and stale generated artifacts before deployment.
+  const generated = yaml.dump(spec, {
+    indent: 2,
+    lineWidth: 120,
+    noRefs: false,
+    sortKeys: false,
+  });
+  const artifactPath = path.resolve(__dirname, "..", "openapi.yaml");
+  const checkedIn = fs.readFileSync(artifactPath, "utf8");
+  if (generated !== checkedIn) {
+    console.error("FAIL: openapi.yaml is stale; run npm run openapi:generate and commit the result");
+    exitCode = 1;
+  }
+
+  // Representative contract invariants: paginated endpoints must describe
+  // both cursor/limit inputs and a validation error, while protected routes
+  // must carry the bearer security requirement.
+  const paths = spec.paths as Record<string, Record<string, any>>;
+  for (const route of ["/api/users", "/api/users/{address}/predictions"]) {
+    const operation = paths[route]?.get;
+    const parameterNames = new Set((operation?.parameters ?? []).map((p: any) => p.name));
+    if (!parameterNames.has("cursor") || !parameterNames.has("limit") || !operation?.responses?.["400"]) {
+      console.error(`FAIL: ${route} must document cursor, limit, and a 400 validation response`);
+      exitCode = 1;
+    }
+  }
+  for (const [route, item] of Object.entries(paths)) {
+    for (const [method, operation] of Object.entries(item)) {
+      if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
+      if (operation.security && operation.security.length > 0 && !operation.responses?.["401"] && !operation.responses?.["403"]) {
+        console.error(`FAIL: protected ${method.toUpperCase()} ${route} must document an auth error response`);
+        exitCode = 1;
+      }
+    }
+  }
+
   if (exitCode === 0) {
-    console.log(`OK: all ${EXPECTED_ROUTES.length} routes documented correctly`);
+    console.log(`OK: routes, reproducible artifact, and representative contracts validated`);
   }
 
   return exitCode;
