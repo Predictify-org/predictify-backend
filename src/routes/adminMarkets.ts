@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth";
+import { type AuthenticatedRequest } from "../middleware/auth";
+import { ADMIN_SCOPES, requireScopedAdmin } from "../middleware/authorizationScopes";
 import { forceFinalize } from "../services/marketAdmin";
 import { db } from "../db";
 import { RouteErrorFactory } from "../errors";
@@ -11,7 +12,7 @@ const bodySchema = z.object({
 
 export const adminMarketsRouter = Router();
 
-adminMarketsRouter.use(requireAdmin);
+adminMarketsRouter.use(requireScopedAdmin(ADMIN_SCOPES.MARKET_MANAGE));
 
 adminMarketsRouter.post(
   "/:id/force-finalize",

@@ -9,7 +9,8 @@ import {
   MarketAlreadyExistsError,
 } from "../../services/marketService";
 import { searchMarkets } from "../../repositories/marketRepository";
-import { requireAdmin, AuthenticatedRequest } from "../../middleware/auth";
+import { AuthenticatedRequest } from "../../middleware/auth";
+import { ADMIN_SCOPES, requireScopedAdmin } from "../../middleware/authorizationScopes";
 import { rateLimitAnon } from "../../middleware/rateLimitAnon";
 import { accessLog } from "../../middleware/accessLog";
 import { marketsCors } from "../../middleware/cors";
@@ -257,7 +258,7 @@ marketsRouter.get("/:id", async (req, res, next) => {
   }
 });
 
-marketsRouter.patch("/:id", requireAdmin, async (req: AuthenticatedRequest, res, next) => {
+marketsRouter.patch("/:id", requireScopedAdmin(ADMIN_SCOPES.MARKET_MANAGE), async (req: AuthenticatedRequest, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   const adminAddress = req.user?.stellarAddress;
 
@@ -335,7 +336,7 @@ marketsRouter.patch("/:id", requireAdmin, async (req: AuthenticatedRequest, res,
  * Returns 409 with error.code="market_exists" if the market ID is already in use.
  * Returns 403 with error.code="forbidden" if the user is not an authorized admin.
  */
-marketsRouter.post("/", requireAdmin, async (req: AuthenticatedRequest, res, next) => {
+marketsRouter.post("/", requireScopedAdmin(ADMIN_SCOPES.MARKET_MANAGE), async (req: AuthenticatedRequest, res, next) => {
   const reqId = String((req as { id?: unknown }).id ?? "anon");
   const adminAddress = req.user?.stellarAddress;
 

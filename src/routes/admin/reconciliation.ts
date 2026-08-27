@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAdmin } from "../../middleware/requireAdmin";
+import { ADMIN_SCOPES, requireScopedAdmin } from "../../middleware/authorizationScopes";
 import { reconcileMarket } from "../../services/reconciliationService";
 import { CORRELATION_ID_HEADER } from "../../lib/http";
 import { getCorrelationId } from "../../middleware/correlation";
@@ -21,7 +21,7 @@ function requestIpOf(req: { ip?: unknown }): string {
 export function createAdminReconciliationRouter(): Router {
   const router = Router();
 
-  router.use(requireAdmin);
+  router.use(requireScopedAdmin(ADMIN_SCOPES.REPORT_READ));
 
   router.get("/markets/:id", async (req, res, next) => {
     try {
