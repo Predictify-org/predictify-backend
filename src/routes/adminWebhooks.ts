@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
-import { requireAdmin } from "../middleware/requireAdmin";
+import { ADMIN_SCOPES, requireScopedAdmin } from "../middleware/authorizationScopes";
 import { webhooksMetricsMiddleware } from "../metrics/webhooksMetrics";
 import type { IWebhookDispatcher } from "../services/webhookDispatcher";
 import type { DlqRow, WebhookStore } from "../services/webhookStore";
@@ -41,7 +41,7 @@ function serializeDlqRow(row: DlqRow) {
 export function createAdminWebhooksRouter(deps: AdminWebhookDeps): Router {
   const router = Router();
   router.use(webhooksMetricsMiddleware);
-  router.use(requireAdmin);
+  router.use(requireScopedAdmin(ADMIN_SCOPES.OPERATIONS_RECOVER));
 
   router.get("/dlq", async (req, res, next) => {
     const requestId = getRequestId();

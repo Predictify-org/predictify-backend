@@ -3,7 +3,7 @@
  *
  * Expects:  Authorization: Bearer <jwt>
  * The JWT must be signed with a key from the key ring (src/utils/keyRing.ts)
- * and carry { role: "admin" }. The verified subject (Stellar address) is
+ * and carry { role: "admin" } or { role: "operator" }. The verified subject (Stellar address) is
  * attached as req.adminAddress for downstream use in audit logging and
  * rate-limit keying.
  *
@@ -14,6 +14,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "../services/jwtService";
 import { logger } from "../config/logger";
+import { scopeForAdminPath } from "./scopeCatalog";
 
 // Augment Express Request so downstream handlers can read the admin identity
 // without casting.
@@ -30,6 +31,14 @@ declare global {
 interface AdminTokenPayload {
   sub?: string;
   role?: string;
+  scopes?: unknown;
+}
+
+function tokenScopes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.some((scope) => typeof scope !== "string")) {
+    return undefined;
+  }
+  return [...new Set(value)];
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
@@ -44,13 +53,26 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   try {
     const payload = verifyAccessToken(token) as AdminTokenPayload;
 
-    if (payload.role !== "admin" || !payload.sub) {
+    if (!payload.sub || (payload.role !== "admin" && payload.role !== "operator")) {
       logger.info({ tokenKid: undefined, role: payload.role, sub: payload.sub }, "requireAdmin_forbidden");
       res.status(403).json({ error: { code: "forbidden" } });
       return;
     }
 
     req.adminAddress = payload.sub;
+    req.authRole = payload.role;
+    req.authScopes = tokenScopes(payload.scopes);
+    const scopes = req.authScopes;
+    const requiredScope = scopeForAdminPath(req.originalUrl || req.baseUrl || req.path);
+    const isLegacyAdmin = payload.role === "admin" && scopes === undefined;
+    if (!isLegacyAdmin && !scopes?.includes(requiredScope)) {
+      logger.info(
+        { adminAddress: payload.sub, requiredScope, scopes: scopes ?? [] },
+        "requireAdmin_scope_forbidden",
+      );
+      res.status(403).json({ error: { code: "forbidden_scope", requiredScope } });
+      return;
+    }
     logger.info({ adminAddress: req.adminAddress }, "requireAdmin_ok");
     next();
   } catch {
