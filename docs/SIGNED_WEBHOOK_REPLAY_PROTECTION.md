@@ -63,3 +63,4 @@ should therefore coordinate key removal with queue depth and the longest
 configured retry window. Nonce-store expiry should exceed the timestamp
 tolerance so a valid message cannot become acceptable again after its replay
 record has expired.
+Alert on repeated verification failures without logging payloads or secrets.
