@@ -25,3 +25,4 @@ reveal provider health or configuration.
 
 Persist the accepted source set and observation time with settlement metadata.
 That evidence lets operators reconstruct exactly which quorum passed.
+Alert when fallback mode is used repeatedly so provider degradation is visible.
