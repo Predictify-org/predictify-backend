@@ -25,8 +25,8 @@ export enum LeaderboardPeriod {
  * 1. **Cursor-based** (preferred): pass `cursor` (opaque token from a previous
  *    response's `nextCursor`).  `offset` is ignored when `cursor` is present.
  * 2. **Offset-based** (legacy): pass `offset` for backward compatibility.
- *    Cursor-based pagination is stable under concurrent writes because it
- *    does not skip rows when the underlying data shifts between pages.
+ *    Cursor ordering is deterministic within a materialized-view snapshot;
+ *    clients should begin a new traversal after an explicit ranking refresh.
  */
 export const leaderboardQuerySchema = z
   .object({

@@ -438,11 +438,12 @@ describe("LeaderboardService", () => {
     });
 
     it("should use cache for first page when available", async () => {
-      (redis.get as any).mockResolvedValueOnce(JSON.stringify(page1));
+      (redis.get as any).mockResolvedValueOnce(JSON.stringify([...page1, page2[0]]));
 
       const result = await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME);
 
       expect(result.entries).toEqual(page1);
+      expect(result.nextCursor).toBeTruthy();
       expect(db.execute).not.toHaveBeenCalled();
     });
 
@@ -505,6 +506,17 @@ describe("LeaderboardService", () => {
       expect(sqlCall.toString()).not.toContain("WHERE");
     });
 
+    it("should reject a cursor with a non-numeric rank", async () => {
+      const malformed = Buffer.from("v1|3|abcuser-aaa", "utf8").toString("base64url");
+      (redis.get as any).mockResolvedValueOnce(null);
+      (db.execute as any).mockResolvedValueOnce({ rows: page1 });
+
+      await getLeaderboardPage(3, LeaderboardPeriod.ALL_TIME, malformed);
+
+      const sqlCall = (db.execute as any).mock.calls[0][0];
+      expect(sqlCall.toString()).not.toContain("WHERE");
+    });
+
     it("should handle DB errors", async () => {
       (redis.get as any).mockResolvedValueOnce(null);
       (db.execute as any).mockRejectedValueOnce(new Error("DB error"));
@@ -563,4 +575,3 @@ describe("LeaderboardService", () => {
     });
   });
 });
-

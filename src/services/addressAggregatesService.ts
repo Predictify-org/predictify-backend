@@ -30,7 +30,7 @@ export async function getAddressAggregates(
       SELECT user_id, stellar_address, total_predictions, correct_predictions,
              accuracy_percentage, rank
       FROM address_aggregates_mv
-      ORDER BY rank ASC
+      ORDER BY rank ASC, user_id ASC
       LIMIT ${limit}
       OFFSET ${offset}
     `
