@@ -1032,6 +1032,10 @@ registry.registerPath({
         },
       },
     },
+    403: {
+      description: "Forbidden — caller is not an administrator",
+      content: { "application/json": { schema: ErrorBody } },
+    },
     404: {
       description: "Not found",
       content: {
@@ -1426,6 +1430,10 @@ registry.registerPath({
           }),
         },
       },
+    },
+    400: {
+      description: "Invalid pagination parameters",
+      content: { "application/json": { schema: ErrorBody } },
     },
   },
 });

@@ -39,6 +39,9 @@ jobs:
       - run: npm ci
         continue-on-error: true
 
+      - name: Check OpenAPI artifact and contract drift
+        run: npm run openapi:check
+
       - run: npm run lint || true
         continue-on-error: true
 

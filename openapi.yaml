@@ -1138,6 +1138,30 @@ components:
         - claims
         - disputes
         - totals
+    CircuitOpenErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - service_unavailable
+            message:
+              type: string
+            retryAfterMs:
+              type: integer
+              minimum: 0
+            requestId:
+              type: string
+          required:
+            - code
+            - message
+            - retryAfterMs
+            - requestId
+      required:
+        - error
     AuditEntry:
       type: object
       properties:
@@ -2485,6 +2509,12 @@ paths:
                         - path:
                             - expectedVersion
                           message: expectedVersion is required
+        '403':
+          description: Forbidden — caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '404':
           description: Not found
           content:
@@ -2843,6 +2873,12 @@ paths:
                 required:
                   - data
                   - meta
+        '400':
+          description: Invalid pagination parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /api/leaderboard/user/{stellarAddress}:
     get:
       operationId: getLeaderboardUser
@@ -4165,6 +4201,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /api/admin/users/{address}/impersonate:
+    post:
+      operationId: impersonateUser
+      tags:
+        - Admin
+      summary: Generate an impersonation JWT for a user (admin only)
+      description: >-
+        Admin-only endpoint that creates an audit-logged JWT allowing the caller to act as the target user. The
+        generated token carries a `user` role assertion.
+
+
+        Downstream work (audit-log writes and token signing) is wrapped in a per-endpoint circuit breaker. After
+        repeated downstream failures the breaker opens and the endpoint fast-fails with 503 without attempting any
+        downstream call, until a recovery probe succeeds.
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: address
+          in: path
+      responses:
+        '200':
+          description: Impersonation token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                    required:
+                      - token
+                required:
+                  - data
+        '400':
+          description: Validation error — address is blank or whitespace-only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Forbidden — missing, invalid, or non-admin JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: >-
+            Circuit breaker is open — downstream dependencies are unhealthy and no downstream call was attempted. Retry
+            after `retryAfterMs`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CircuitOpenErrorBody'
   /api/admin/audit:
     get:
       operationId: getAdminAuditLog
