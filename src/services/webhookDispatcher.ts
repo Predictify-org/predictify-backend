@@ -36,6 +36,7 @@ import type {
   WebhookDelivery,
   WebhookStore,
 } from "./webhookStore";
+import type { SignedWebhookSecurity, VerificationResult } from "./signedWebhookSecurity";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -422,6 +423,8 @@ export interface DispatcherOptions {
   signingSecret: string;
   /** Backoff for attempt N (1-based). Default: exponential 1s,2s,4s,… capped 5m. */
   backoffMs?: (attempt: number) => number;
+  /** Optional rotating-key signer for timestamped replay-safe deliveries. */
+  security?: SignedWebhookSecurity;
 }
 
 const defaultBackoff = (attempt: number): number =>
@@ -432,12 +435,14 @@ export class WebhookDispatcher {
   private readonly send: HttpSender;
   private readonly secret: string;
   private readonly backoffMs: (attempt: number) => number;
+  private readonly security?: SignedWebhookSecurity;
 
   constructor(opts: DispatcherOptions) {
     this.store = opts.store;
     this.send = opts.send ?? fetchSender;
     this.secret = opts.signingSecret;
     this.backoffMs = opts.backoffMs ?? defaultBackoff;
+    this.security = opts.security;
   }
 
   /** HMAC-SHA256 over the exact payload bytes, hex-encoded. */
@@ -460,8 +465,23 @@ export class WebhookDispatcher {
   async enqueue(
     input: Omit<NewDelivery, "signature"> & { signature?: string },
   ): Promise<WebhookDelivery> {
-    const signature = input.signature ?? this.sign(input.payload);
-    return this.store.createDelivery({ ...input, signature });
+    const signed = this.security && input.signature === undefined
+      ? this.security.sign(input.payload)
+      : undefined;
+    const signature = input.signature ?? signed?.header ?? this.sign(input.payload);
+    const headers = signed
+      ? {
+          ...(input.headers ?? {}),
+          "x-predictify-timestamp": String(signed.timestamp),
+          "x-predictify-nonce": signed.nonce,
+        }
+      : input.headers;
+    return this.store.createDelivery({ ...input, signature, headers });
+  }
+
+  /** Verifies a timestamped rotating-key signature without exposing a reason. */
+  verifySigned(payload: Buffer, header: string, now?: number): VerificationResult {
+    return this.security?.verify(payload, header, now) ?? { ok: false, reason: "unknown_key" };
   }
 
   private buildHeaders(d: WebhookDelivery): Record<string, string> {
