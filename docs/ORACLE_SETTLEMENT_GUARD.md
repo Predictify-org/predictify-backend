@@ -22,3 +22,6 @@ configured boundary, the same snapshot is accepted without a separate mode
 switch. Callers should persist the rejection reason in their settlement audit
 record, while returning a generic client-facing error if the reason could
 reveal provider health or configuration.
+
+Persist the accepted source set and observation time with settlement metadata.
+That evidence lets operators reconstruct exactly which quorum passed.
