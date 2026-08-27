@@ -22,7 +22,8 @@ SELECT
         100.0 * SUM(CASE WHEN p.outcome = m.resolution_outcome THEN 1 ELSE 0 END) / COUNT(p.id)
       ELSE 0
       END DESC,
-      COUNT(p.id) DESC
+      COUNT(p.id) DESC,
+      u.id ASC
   ) AS rank
 FROM users u
 LEFT JOIN predictions p ON u.id = p.user_id

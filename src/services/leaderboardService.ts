@@ -140,7 +140,7 @@ export async function getLeaderboard(
       SELECT user_id, stellar_address, total_predictions, correct_predictions, 
              accuracy_percentage, rank
       FROM ${sql.identifier(viewName)}
-      ORDER BY rank ASC
+      ORDER BY rank ASC, user_id ASC
       LIMIT ${limit}
       OFFSET ${offset}
     `,
@@ -242,9 +242,8 @@ const RANK_PAD_WIDTH = 10;
  * Cursor-based pagination for the leaderboard.
  *
  * Uses `(rank, user_id)` as the keyset — rank is the natural sort column and
- * user_id is a unique tiebreaker.  This is stable under concurrent writes
- * because cursor pagination does not skip/duplicate rows when ranks shift
- * between page loads (unlike OFFSET).
+ * user_id is a unique tiebreaker. The materialized view assigns ranks with
+ * the same user_id tie-breaker, so equal scores have one deterministic order.
  *
  * When called **without** a cursor (first page), the result is cached under
  * `leaderboard:{period}:{limit}:0` (same key as the offset=0 page) so the
@@ -273,6 +272,10 @@ export async function getLeaderboardPage(
 
     const cursorRank = parseInt(cursorKey.sortValue, 10);
     const cursorUserId = cursorKey.id;
+    if (!Number.isSafeInteger(cursorRank) || cursorRank < 1 || !cursorUserId) {
+      logger.warn({ cursor }, "Invalid leaderboard cursor key, falling back to first page");
+      return getLeaderboardPage(limit, period, undefined);
+    }
 
     const result = await db.execute<LeaderboardEntry>(
       sql`
@@ -317,7 +320,9 @@ export async function getLeaderboardPage(
 
     if (redis && rows.length > 0) {
       try {
-        await redis.setex(cacheKey, 300, JSON.stringify(rows.slice(0, limit)));
+        // Keep the look-ahead row in the cache; without it a cached first page
+        // loses `nextCursor` and makes the rest of the leaderboard unreachable.
+        await redis.setex(cacheKey, 300, JSON.stringify(rows));
       } catch (err) {
         logger.warn({ err, cacheKey }, "Cache write failed, but query succeeded");
       }
