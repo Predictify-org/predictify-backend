@@ -341,9 +341,20 @@ export const indexerEvents = pgTable("indexer_events", {
     .defaultNow(),
   marketId: text("market_id"),
   data: jsonb("data"),
+  canonical: boolean("canonical").notNull().default(true),
 });
 
 export type IndexerEvent = typeof indexerEvents.$inferSelect;
+
+export const indexerReorgs = pgTable("indexer_reorgs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ledger: integer("ledger").notNull(),
+  opIndex: integer("op_index").notNull(),
+  oldTxHash: text("old_tx_hash").notNull(),
+  newTxHash: text("new_tx_hash").notNull(),
+  status: text("status").notNull().default("detected"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const idempotencyRecords = pgTable(
   "idempotency_records",
