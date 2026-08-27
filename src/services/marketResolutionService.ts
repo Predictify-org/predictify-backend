@@ -4,6 +4,11 @@ import type { Db } from "../db";
 import { markets, predictions, webhookSubscriptions } from "../db/schema";
 import { logger } from "../config/logger";
 import { emitMarketEvent, LogEvent } from "../logging/events";
+import {
+  evaluateOracleSnapshot,
+  type OracleSettlementPolicy,
+  type OracleSnapshot,
+} from "./oracleSettlementGuard";
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -123,6 +128,28 @@ export async function resolveMarket(
   }
 
   return { processed: true };
+}
+
+/**
+ * Settlement entry point for callers that have fetched oracle evidence. The
+ * guard runs before any database mutation or webhook fan-out, so stale,
+ * missing, contradictory, or unsafe fallback data cannot partially settle a
+ * market. The existing event-only entry point remains available for historical
+ * indexer events that already carry an on-chain winning outcome.
+ */
+export async function resolveMarketWithOracle(
+  repo: MarketResolutionRepo,
+  event: MarketResolvedEvent,
+  oracle: OracleSnapshot,
+  policy: OracleSettlementPolicy,
+  emitWebhook: WebhookEmitter = httpWebhookEmitter,
+): Promise<{ processed: boolean; oraclePrice: number }> {
+  const decision = evaluateOracleSnapshot(oracle, event.timestamp, policy, event.marketId);
+  if (!decision.accepted) {
+    throw new Error(`oracle_settlement_rejected:${decision.reason}`);
+  }
+  const result = await resolveMarket(repo, event, emitWebhook);
+  return { ...result, oraclePrice: decision.price };
 }
 
 // ─── Drizzle repository ────────────────────────────────────────────────────
