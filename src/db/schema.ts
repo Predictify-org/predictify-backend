@@ -180,7 +180,6 @@ export const predictions = pgTable("predictions", {
   claimTxHash: text("claim_tx_hash"),
   /** Timestamp when the claim transaction was submitted. Null until claimed. */
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -612,6 +611,58 @@ export const scheduledReports = pgTable(
 export type ScheduledReport = typeof scheduledReports.$inferSelect;
 export type NewScheduledReport = typeof scheduledReports.$inferInsert;
 
+/**
+ * One durable execution attempt for a scheduled report period.
+ *
+ * `scheduleKey` is deliberately stored instead of inferred by workers.  The
+ * unique pair (scheduledReportId, runFor) is the database-level idempotency
+ * boundary: a queue redelivery, process restart, or two dispatchers may all
+ * ask for the same period without creating a second output.
+ */
+export const scheduledReportRuns = pgTable(
+  "scheduled_report_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    scheduledReportId: uuid("scheduled_report_id")
+      .notNull()
+      .references(() => scheduledReports.id, { onDelete: "cascade" }),
+    scheduleKey: text("schedule_key").notNull(),
+    runFor: timestamp("run_for", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("pending"),
+    attempt: integer("attempt").notNull().default(0),
+    leaseToken: text("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    outputRef: text("output_ref"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    scheduledReportRunsIdentityIdx: index("scheduled_report_runs_identity_idx").on(
+      t.scheduledReportId,
+      t.runFor,
+    ),
+    scheduledReportRunsReadyIdx: index("scheduled_report_runs_ready_idx").on(
+      t.status,
+      t.nextAttemptAt,
+    ),
+    scheduledReportRunsLeaseIdx: index("scheduled_report_runs_lease_idx").on(
+      t.status,
+      t.leaseUntil,
+    ),
+  }),
+);
+
+export type ScheduledReportRun = typeof scheduledReportRuns.$inferSelect;
+export type NewScheduledReportRun = typeof scheduledReportRuns.$inferInsert;
+
 // ---------------------------------------------------------------------------
 // Market Watchers
 // ---------------------------------------------------------------------------
@@ -677,4 +728,3 @@ export const referrals = pgTable(
 
 export type Referral = typeof referrals.$inferSelect;
 export type NewReferral = typeof referrals.$inferInsert;
-

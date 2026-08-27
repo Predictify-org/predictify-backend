@@ -327,20 +327,6 @@ usersRouter.get(
       const { address } = paramsParse.data;
 
       // Validate and coerce query parameters with zod.
-      { reqId, stellarAddress: req.params.stellarAddress },
-        "user_profile_validation_failed",
-      );
-      return res.status(400).json({
-        error: {
-          code: "validation_error",
-          message: "invalid stellar address",
-          requestId: reqId,
-        },
-      });
-    }
-
-    // ── 2. Service call ──────────────────────────────────────────────────
-      // Validate and coerce query parameters with zod.
       const queryParse = userPredictionsQuerySchema.safeParse(req.query);
       if (!queryParse.success) {
         logger.warn(
@@ -355,19 +341,13 @@ usersRouter.get(
             requestId: reqId,
           },
         });
+      }
     const { status, cursor, limit: rawLimit } = queryParse.data;
     // clampLimit is a belt-and-suspenders guard; zod already enforces 1–100.
     const limit = clampLimit(rawLimit);
 
     logger.debug({ reqId, address, status, limit, hasCursor: !!cursor }, "predictions_request");
 
-    const user = await getUserByAddress(address);
-    if (!user) {
-      logger.debug({ reqId, address }, "predictions_user_not_found");
-      return res.status(404).json({ error: { code: "not_found", requestId: reqId } });
-    }
-
-    const page = await getUserPredictions(user.id, { status, limit, cursor });
     const user = await getUserByAddress(address);
     if (!user) {
       logger.debug({ reqId, address }, "predictions_user_not_found");

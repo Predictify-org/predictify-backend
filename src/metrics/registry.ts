@@ -58,6 +58,26 @@ export const indexerLagLedgers = new Gauge({
   registers: [register],
 });
 
+export const scheduledReportRunsTotal = new Counter({
+  name: "scheduled_report_runs_total",
+  help: "Scheduled report runs by terminal outcome",
+  labelNames: ["status"] as const,
+  registers: [register],
+});
+
+export const scheduledReportRetriesTotal = new Counter({
+  name: "scheduled_report_retries_total",
+  help: "Scheduled report retry attempts by reason",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const scheduledReportLeaseConflictsTotal = new Counter({
+  name: "scheduled_report_lease_conflicts_total",
+  help: "Scheduled report jobs skipped because another worker owns the lease",
+  registers: [register],
+});
+
 export const webhookDeliveriesTotal = new Counter({
   name: "webhook_deliveries_total",
   help: "Total number of webhook deliveries, segmented by outcome status (success, failed)",
