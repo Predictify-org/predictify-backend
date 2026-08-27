@@ -180,7 +180,6 @@ export const predictions = pgTable("predictions", {
   claimTxHash: text("claim_tx_hash"),
   /** Timestamp when the claim transaction was submitted. Null until claimed. */
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -342,9 +341,20 @@ export const indexerEvents = pgTable("indexer_events", {
     .defaultNow(),
   marketId: text("market_id"),
   data: jsonb("data"),
+  canonical: boolean("canonical").notNull().default(true),
 });
 
 export type IndexerEvent = typeof indexerEvents.$inferSelect;
+
+export const indexerReorgs = pgTable("indexer_reorgs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ledger: integer("ledger").notNull(),
+  opIndex: integer("op_index").notNull(),
+  oldTxHash: text("old_tx_hash").notNull(),
+  newTxHash: text("new_tx_hash").notNull(),
+  status: text("status").notNull().default("detected"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const idempotencyRecords = pgTable(
   "idempotency_records",
@@ -677,4 +687,3 @@ export const referrals = pgTable(
 
 export type Referral = typeof referrals.$inferSelect;
 export type NewReferral = typeof referrals.$inferInsert;
-

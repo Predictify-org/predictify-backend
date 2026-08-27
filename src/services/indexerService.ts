@@ -2,6 +2,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { getPool } from "../db/client";
+import { detectReorgs, dedupeEvents, type RecoveryEvent } from "./indexerRecovery";
 
 export const INDEXER_CURSOR_ID = 1;
 
@@ -16,6 +17,12 @@ export interface IndexerEventInput {
   opIndex: number;
   eventType?: string;
   payload?: unknown;
+}
+
+export interface ReorgRecoveryReport {
+  inserted: number;
+  replacements: number;
+  repairedPredictions: number;
 }
 
 export interface SorobanRpcClient {
@@ -218,16 +225,56 @@ export class IndexerService {
   }
 
   async persistEvents(events: IndexerEventInput[]): Promise<number> {
+    const report = await this.persistEventsWithRecovery(events);
+    return report.inserted;
+  }
+
+  /**
+   * Persist an at-least-once RPC batch. Exact duplicates are ignored, while
+   * a different transaction at the same ledger/op position replaces the old
+   * canonical event and resets prediction state tied to the stale transaction.
+   */
+  async persistEventsWithRecovery(events: IndexerEventInput[]): Promise<ReorgRecoveryReport> {
     if (events.length === 0) {
-      return 0;
+      return { inserted: 0, replacements: 0, repairedPredictions: 0 };
     }
 
     const pool = getPool();
     let inserted = 0;
+    let replacements = 0;
+    let repairedPredictions = 0;
+    const uniqueEvents = dedupeEvents(events as RecoveryEvent[]);
 
-    for (const event of events) {
+    for (const event of uniqueEvents) {
+      const existing = await pool.query<{ tx_hash: string }>(
+        `SELECT tx_hash FROM indexer_events
+         WHERE ledger = $1 AND op_index = $2 AND canonical = TRUE
+         AND tx_hash <> $3 LIMIT 1`,
+        [event.ledger, event.opIndex, event.txHash],
+      );
+      if ((existing.rows ?? []).length > 0) {
+        const oldTxHash = existing.rows[0].tx_hash;
+        await pool.query(
+          `UPDATE indexer_events SET canonical = FALSE
+           WHERE ledger = $1 AND op_index = $2 AND tx_hash = $3`,
+          [event.ledger, event.opIndex, oldTxHash],
+        );
+        await pool.query(
+          `INSERT INTO indexer_reorgs (ledger, op_index, old_tx_hash, new_tx_hash)
+           VALUES ($1, $2, $3, $4)`,
+          [event.ledger, event.opIndex, oldTxHash, event.txHash],
+        );
+        const repaired = await pool.query(
+          `UPDATE predictions SET status = 'pending', result = NULL, last_error = NULL,
+             confirm_attempts = 0
+           WHERE tx_hash = $1 AND status IN ('confirmed', 'failed')`,
+          [oldTxHash],
+        );
+        replacements += 1;
+        repairedPredictions += repaired.rowCount ?? 0;
+      }
       const result = await pool.query(
-        `INSERT INTO indexer_events (ledger, tx_hash, op_index, event_type, payload)
+        `INSERT INTO indexer_events (ledger, tx_hash, op_index, event_type, data, canonical)
          VALUES ($1, $2, $3, $4, $5::jsonb)
          ON CONFLICT (ledger, tx_hash, op_index) DO NOTHING
          RETURNING id`,
@@ -235,14 +282,14 @@ export class IndexerService {
           event.ledger,
           event.txHash,
           event.opIndex,
-          event.eventType ?? null,
+          event.eventType ?? "unknown",
           event.payload === undefined ? null : JSON.stringify(event.payload),
         ],
       );
       inserted += result.rowCount ?? 0;
     }
 
-    return inserted;
+    return { inserted, replacements, repairedPredictions };
   }
 
   async fetchEventsForRange(startLedger: number, endLedger: number): Promise<IndexerEventInput[]> {
