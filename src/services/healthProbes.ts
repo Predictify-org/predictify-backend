@@ -78,7 +78,8 @@ async function probeHorizon(): Promise<ProbeResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500);
     try {
-      await fetch(env.HORIZON_URL, { signal: controller.signal });
+      const { fetchWithRetry } = await import("../lib/http");
+      await fetchWithRetry(env.HORIZON_URL, { signal: controller.signal });
       return { status: "ok", latencyMs: Date.now() - start };
     } finally {
       clearTimeout(timeout);
