@@ -3,11 +3,12 @@
  *
  * GET /api/health/ready — deep readiness check
  *
- * Probes all four runtime dependencies in parallel:
+ * Probes all five required runtime dependencies in parallel:
  *  1. db          — Postgres (SELECT 1)
  *  2. sorobanRpc  — Soroban RPC (getLatestLedger)
  *  3. indexerLag  — compares indexer cursor to chain tip
  *  4. queue       — Redis / BullMQ (PING)
+ *  5. horizon     — Horizon REST API
  *
  * HTTP response codes
  * ───────────────────
@@ -24,7 +25,8 @@
  *     "db":         { "status": "pass"|"fail", "durationMs": <n>, "message": "…" },
  *     "sorobanRpc": { … },
  *     "indexerLag": { … },
- *     "queue":      { … }
+ *     "queue":      { … },
+ *     "horizon":    { … }
  *   }
  * }
  *
