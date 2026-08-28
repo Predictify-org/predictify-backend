@@ -12,6 +12,7 @@ import { fingerprintMiddleware } from "./middleware/fingerprint";
 import { accessLog } from "./middleware/accessLog";
 import { idempotency } from "./middleware/idempotency";
 import { defaultBodySizeLimitMiddleware, webhookBodySizeLimitMiddleware } from "./middleware/bodySize";
+import { perUserConcurrency } from "./middleware/perUserConcurrency";
 import { healthRouter } from "./routes/health";
 import healthzDependenciesRouter from "./routes/healthz/dependencies";
 import { createReadyRouter } from "./routes/health/ready";
@@ -19,7 +20,6 @@ import { dependenciesRouter } from "./routes/health/dependencies";
 import { versionRouter } from "./routes/health/version";
 import { redisConnection } from "./queue";
 import { authRouter } from "./routes/auth";
-import { adminRouter } from "./routes/admin";
 import { recommendationsRouter } from "./routes/recommendations";
 import { recommendationsHealthRouter } from "./routes/recommendations/health";
 import { tagsRouter } from "./routes/tags";
@@ -29,7 +29,6 @@ import { commentsRouter } from "./routes/comments";
 import { usersRouter } from "./routes/users";
 import { predictionsRouter } from "./routes/predictions";
 import { usersHealthRouter } from "./routes/users/health";
-import { exportsPredictionsRouter } from "./routes/exports/predictions";
 import { userPortfolioRouter } from "./routes/users/portfolio";
 import { statsRouter } from "./routes/stats";
 import { userStatsRouter } from "./routes/users/stats";
@@ -50,9 +49,7 @@ import { referralsRouter } from "./routes/referrals";
 import { notificationsRouter } from "./routes/notifications";
 import { notificationsHealthRouter } from "./routes/notifications/health";
 import { socialRouter } from "./routes/social";
-import { webhooksRouter } from "./routes/webhooks";
 import { webhooksHealthRouter } from "./routes/webhooks/health";
-import { createWebhooksRouter } from "./routes/webhooks";
 import { adminAuditRouter } from "./routes/admin/audit";
 import { adminAuditExportRouter } from "./routes/admin/audit/export";
 import { auditCountsRouter } from "./routes/audit/counts";
@@ -67,7 +64,7 @@ import { REQUEST_ID_HEADER } from "./lib/http";
 import { register } from "./metrics/registry";
 import { connectWithRetry, closeDb, db } from "./db/client";
 import { stopScheduler } from "./services/scheduler";
-import { startIndexerHealthProbe, stopIndexerHealthProbe } from "./jobs/indexerHealthProbe";
+import { startIndexerHealthProbe } from "./jobs/indexerHealthProbe";
 import { indexerHealthRouter } from "./routes/indexer/health";
 import { indexerCursorRouter } from "./routes/indexer/cursor";
 import { WebhookWorker } from "./workers/webhookWorker";
@@ -83,11 +80,8 @@ import { reportsRouter } from "./routes/reports";
 import { exportsRouter } from "./routes/exports";
 import { fingerprintRouter } from "./routes/fingerprint";
 import { alertsRouter } from "./routes/alerts";
-import { gracefulShutdown } from "./lifecycle/shutdown";
-import { DrizzleWebhookStore } from "./services/drizzleWebhookStore";
-import type { IWebhookDispatcher } from "./services/webhookDispatcher";
-import type { WebhookStore } from "./services/webhookStore";
 
+export type CreateAppOptions = Record<string, unknown>;
 
 const docsEnabled =
   process.env.ENABLE_DOCS === "true" ||
@@ -102,7 +96,7 @@ function sanitizeRequestId(raw: string): string | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-export function createApp(options: CreateAppOptions = {}): express.Express {
+export function createApp(_options: CreateAppOptions = {}): express.Express {
   const app = express();
 
   app.set("etag", false);

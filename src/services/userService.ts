@@ -1,5 +1,5 @@
 import { db } from "../db/client";
-import { users, predictions, markets, claims } from "../db/schema";
+import { users, predictions, markets } from "../db/schema";
 import { and, eq, desc, lt, count, or } from "drizzle-orm";
 import { Result, ok, err } from "../errors/RouteError";
 import { encodeCursor, decodeCursor, clampLimit, DEFAULT_PAGE_SIZE } from "../utils/cursor";

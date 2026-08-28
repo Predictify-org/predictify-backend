@@ -971,19 +971,19 @@ components:
     PredictionsListResponse:
       type: object
       properties:
-        items:
+        data:
           type: array
           items:
             $ref: '#/components/schemas/PredictionRow'
-        next_cursor:
+        nextCursor:
           type: string
           nullable: true
         total:
           type: integer
           minimum: 0
       required:
-        - items
-        - next_cursor
+        - data
+        - nextCursor
     FollowResult:
       type: object
       properties:
@@ -2113,6 +2113,12 @@ paths:
                         version: 1
                         createdAt: '2026-03-01T09:00:00.000Z'
                     nextCursor: null
+        '400':
+          description: Validation error — invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
         '401':
           description: Unauthorized
           content:
@@ -2166,6 +2172,12 @@ paths:
                 required:
                   - data
                   - nextCursor
+        '400':
+          description: Validation error — invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
         '401':
           description: Unauthorized
           content:
@@ -3913,7 +3925,7 @@ paths:
       summary: List the authenticated user’s predictions
       description: >-
         Returns a cursor-paginated list of predictions placed by the caller. Sort order is `createdAt DESC, id DESC`.
-        Pass the returned `next_cursor` as `?cursor=` to fetch the next page. `next_cursor` is `null` when no further
+        Pass the returned `nextCursor` as `?cursor=` to fetch the next page. `nextCursor` is `null` when no further
         pages exist.
       security:
         - bearerAuth: []
@@ -3961,7 +3973,7 @@ paths:
               examples:
                 authenticatedPredictionsPage:
                   value:
-                    items:
+                    data:
                       - id: f47ac10b-58cc-4372-a567-0e02b2c3d479
                         marketId: market_123
                         question: Will Bitcoin hit 100k in 2026?
@@ -3972,7 +3984,7 @@ paths:
                         result: 'yes'
                         createdAt: '2026-05-01T12:00:00.000Z'
                         resolutionTime: '2026-06-01T12:00:00.000Z'
-                    next_cursor: cursor_abc123
+                    nextCursor: cursor_abc123
         '400':
           description: Validation error — invalid query parameters
           content:
@@ -4139,6 +4151,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminRouteListResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
         '403':
           description: Forbidden
           content:
@@ -4749,6 +4767,14 @@ paths:
       description: Returns the current sliding-window rate-limit usage for a target Stellar address. Admin-only and read-only.
       security:
         - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: Target Stellar address
+          required: true
+          description: Target Stellar address
+          name: address
+          in: path
       responses:
         '200':
           description: Current rate-limit state for the requested address
@@ -5070,6 +5096,12 @@ paths:
                   value:
                     data: []
                     nextCursor: null
+        '400':
+          description: Validation error — invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
         '401':
           description: Missing or invalid JWT
           content:

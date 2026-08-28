@@ -7,8 +7,7 @@
  * route layer and tests can treat them as injectable dependencies.
  */
 
-import { eq, and, desc } from "drizzle-orm";
-import { v4 as uuidv4 } from "uuid";
+import { eq, desc } from "drizzle-orm";
 import { db } from "../db/client";
 import { referrals, type Referral, type NewReferral } from "../db/schema";
 
