@@ -9,7 +9,7 @@ Unlike `/healthz/dependencies` (cached 5 s, returns 207 for degraded), this endp
 
 - Runs **every call**, uncached
 - Returns only `200` (ready) or `503` (unready) — no 207
-- Declares ready only when **all four** probes pass
+- Declares ready only when **all five required dependency probes** pass
 
 ## Response shape
 
@@ -22,7 +22,8 @@ Unlike `/healthz/dependencies` (cached 5 s, returns 207 for degraded), this endp
     "db":         { "status": "pass", "durationMs": 4,  "message": "Database connection healthy" },
     "sorobanRpc": { "status": "pass", "durationMs": 18, "message": "Soroban RPC healthy" },
     "indexerLag": { "status": "pass", "durationMs": 22, "message": "Indexer lag healthy: 12 ≤ 200 ledgers" },
-    "queue":      { "status": "pass", "durationMs": 2,  "message": "Queue (Redis) healthy" }
+    "queue":      { "status": "pass", "durationMs": 2,  "message": "Queue (Redis) healthy" },
+    "horizon":    { "status": "pass", "durationMs": 6,  "message": "Horizon healthy" }
   }
 }
 ```
@@ -61,12 +62,18 @@ Mainnet produces ~1 ledger/5 s, so 200 ledgers ≈ ~17 minutes of tolerated lag.
 ### `queue` — Redis / BullMQ
 Issues a Redis `PING` with a 1 s timeout. Fails if the response is not `PONG`.
 
+### `horizon` — Horizon REST API
+Requests the configured Horizon root endpoint with a 1 s timeout. Fails when
+Horizon is unreachable or returns a non-success HTTP status. Horizon is required
+by the settlement confirmer worker.
+
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `REDIS_URL` | `redis://localhost:6379` | BullMQ Redis connection |
 | `SOROBAN_RPC_URL` | — | Soroban RPC endpoint (required) |
+| `HORIZON_URL` | — | Horizon endpoint (required) |
 | `READINESS_MAX_LAG_LEDGERS` | `200` | Max tolerated indexer lag ledgers |
 
 ## Correlation IDs
@@ -103,7 +110,7 @@ Each call emits one INFO entry on completion:
   "correlationId": "…",
   "status": "ready",
   "elapsedMs": 28,
-  "checks": { "db": { … }, "sorobanRpc": { … }, "indexerLag": { … }, "queue": { … } }
+  "checks": { "db": { … }, "sorobanRpc": { … }, "indexerLag": { … }, "queue": { … }, "horizon": { … } }
 }
 ```
 

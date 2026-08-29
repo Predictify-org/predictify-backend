@@ -9,7 +9,7 @@
  *
  * Coverage targets
  * ────────────────
- *  • All four probes: db, sorobanRpc, indexerLag, queue
+ *  • All five required probes: db, sorobanRpc, indexerLag, queue, horizon
  *  • 200 when all pass / 503 when any fail
  *  • Response shape: status, correlationId, checkedAt, checks
  *  • correlationId echo + UUID generation
@@ -29,6 +29,16 @@ process.env.PREDICTIFY_CONTRACT_ID = "test-contract-id";
 process.env.REDIS_URL = "redis://localhost:6379";
 
 // ── Mocks (must come before createApp / route imports) ───────────────────────
+
+const mockGetLatestLedger = jest.fn().mockResolvedValue({ sequence: 1100 });
+
+jest.mock("@stellar/stellar-sdk", () => ({
+  SorobanRpc: {
+    Server: jest.fn().mockImplementation(() => ({
+      getLatestLedger: mockGetLatestLedger,
+    })),
+  },
+}));
 
 // Prevent real DB pool from being opened.
 jest.mock("../src/db/client", () => ({
@@ -101,6 +111,7 @@ function allPass(): ReadinessResult {
       sorobanRpc: { status: "pass", durationMs: 10, message: "Soroban RPC healthy" },
       indexerLag: { status: "pass", durationMs: 8, message: "Indexer lag healthy: 50 ≤ 200 ledgers" },
       queue: { status: "pass", durationMs: 2, message: "Queue (Redis) healthy" },
+      horizon: { status: "pass", durationMs: 4, message: "Horizon healthy" },
     },
   };
 }
@@ -225,27 +236,78 @@ describe("readinessService — individual probes (unit)", () => {
     });
   });
 
-  describe("performReadinessCheck", () => {
-    // For these tests we mock the Soroban SDK at the module level so no real
-    // network call is made, and we control db/redis via injected stubs.
+  describe("checkHorizon", () => {
+    const fetchMock = jest.spyOn(globalThis, "fetch");
 
+    afterEach(() => {
+      fetchMock.mockReset();
+    });
+
+    it("returns pass for a successful Horizon response", async () => {
+      fetchMock.mockResolvedValue({ ok: true, status: 200 } as Response);
+
+      const result = await real.checkHorizon();
+
+      expect(result.status).toBe("pass");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://horizon-testnet.stellar.org",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+
+    it("returns fail when Horizon responds with an error status", async () => {
+      fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
+
+      const result = await real.checkHorizon();
+
+      expect(result).toMatchObject({
+        status: "fail",
+        message: "Horizon returned HTTP 503",
+      });
+    });
+
+    it("returns fail when Horizon is unreachable", async () => {
+      fetchMock.mockRejectedValue(new Error("network unavailable"));
+
+      const result = await real.checkHorizon();
+
+      expect(result).toMatchObject({
+        status: "fail",
+        message: "network unavailable",
+      });
+    });
+
+    it("returns fail when Horizon does not respond within the probe timeout", async () => {
+      jest.useFakeTimers();
+      fetchMock.mockImplementation((_input, init) =>
+        new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("This operation was aborted"));
+          });
+        }),
+      );
+
+      const promise = real.checkHorizon();
+      jest.advanceTimersByTime(1_100);
+      const result = await promise;
+
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain("aborted");
+      jest.useRealTimers();
+    });
+  });
+
+  describe("performReadinessCheck", () => {
     beforeEach(() => {
-      // Mock the entire Stellar SDK so checkSorobanRpc and checkIndexerLag
-      // don't try to hit the real RPC.
-      jest.doMock("@stellar/stellar-sdk", () => ({
-        SorobanRpc: {
-          Server: jest.fn().mockImplementation(() => ({
-            getLatestLedger: jest.fn().mockResolvedValue({ sequence: 1100 }),
-          })),
-        },
-      }));
+      jest.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 } as Response);
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1100 });
     });
 
     afterEach(() => {
-      jest.dontMock("@stellar/stellar-sdk");
+      jest.restoreAllMocks();
     });
 
-    it("returns ready when db and redis pass (rpc/indexer may vary)", async () => {
+    it("runs all required dependency probes", async () => {
       const db = makeDb();
       const redis = makeRedis("PONG");
 
@@ -254,6 +316,7 @@ describe("readinessService — individual probes (unit)", () => {
       // db and queue must pass; overall result depends on RPC reachability in CI
       expect(result.checks.db.status).toBe("pass");
       expect(result.checks.queue.status).toBe("pass");
+      expect(result.checks.horizon.status).toBe("pass");
       expect(result).toHaveProperty("status");
       expect(result).toHaveProperty("checks");
     });
@@ -304,7 +367,7 @@ describe("GET /api/health/ready — HTTP", () => {
     expect(res.body.status).toBe("ready");
   });
 
-  it("returns all four checks in the body", async () => {
+  it("returns all five required checks in the body", async () => {
     mockPerform.mockResolvedValue(allPass());
 
     const res = await request(makeApp()).get("/api/health/ready");
@@ -313,6 +376,7 @@ describe("GET /api/health/ready — HTTP", () => {
     expect(res.body.checks).toHaveProperty("sorobanRpc");
     expect(res.body.checks).toHaveProperty("indexerLag");
     expect(res.body.checks).toHaveProperty("queue");
+    expect(res.body.checks).toHaveProperty("horizon");
   });
 
   it("each check has status, durationMs, and message", async () => {
@@ -368,6 +432,15 @@ describe("GET /api/health/ready — HTTP", () => {
     expect(res.body.checks.queue.status).toBe("fail");
   });
 
+  it("returns 503 when Horizon probe fails", async () => {
+    mockPerform.mockResolvedValue(oneFailure("horizon"));
+
+    const res = await request(makeApp()).get("/api/health/ready");
+
+    expect(res.status).toBe(503);
+    expect(res.body.checks.horizon.status).toBe("fail");
+  });
+
   it("returns 503 when all probes fail", async () => {
     mockPerform.mockResolvedValue({
       status: "unready",
@@ -376,6 +449,7 @@ describe("GET /api/health/ready — HTTP", () => {
         sorobanRpc: { status: "fail", durationMs: 1001, message: "RPC down" },
         indexerLag: { status: "fail", durationMs: 1001, message: "Lag too high" },
         queue: { status: "fail", durationMs: 1001, message: "Redis down" },
+        horizon: { status: "fail", durationMs: 1001, message: "Horizon down" },
       },
     });
 

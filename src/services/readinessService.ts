@@ -13,9 +13,10 @@
  *  • sorobanRpc  — getLatestLedger() call to the Soroban RPC node
  *  • indexerLag  — compares indexer cursor to chain tip; fails when lag > threshold
  *  • queue       — Redis PING via the BullMQ connection
+ *  • horizon     — Horizon root endpoint used by settlement workers
  *
  * Each probe has a 1-second timeout to prevent a single slow dependency from
- * blocking the readiness response. All four run in parallel via Promise.allSettled.
+ * blocking the readiness response. All five run in parallel via Promise.allSettled.
  */
 
 import { env } from "../config/env";
@@ -38,6 +39,7 @@ export interface ReadinessStatus {
   sorobanRpc: ReadinessCheck;
   indexerLag: ReadinessCheck;
   queue: ReadinessCheck;
+  horizon: ReadinessCheck;
 }
 
 export interface ReadinessResult {
@@ -228,10 +230,51 @@ export async function checkQueue(redis: RedisLike): Promise<ReadinessCheck> {
   }
 }
 
+/**
+ * Probe Horizon, which is required by the settlement confirmer worker.
+ *
+ * The response status is checked explicitly: a reachable Horizon instance
+ * returning an error page is not a healthy dependency.
+ */
+export async function checkHorizon(): Promise<ReadinessCheck> {
+  const start = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(env.HORIZON_URL, {
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return {
+        status: "fail",
+        durationMs: Date.now() - start,
+        message: `Horizon returned HTTP ${response.status}`,
+      };
+    }
+
+    return {
+      status: "pass",
+      durationMs: Date.now() - start,
+      message: "Horizon healthy",
+    };
+  } catch (error) {
+    logger.error({ error }, "readiness_horizon_check_failed");
+    return {
+      status: "fail",
+      durationMs: Date.now() - start,
+      message: error instanceof Error ? error.message : "Horizon failed",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // ── Top-level orchestrator ────────────────────────────────────────────────────
 
 /**
- * Run all four readiness probes in parallel and return a consolidated result.
+ * Run all five readiness probes in parallel and return a consolidated result.
  *
  * A failed `Promise.allSettled` branch (i.e. an unexpected throw that bypasses
  * the probe's own try/catch) is mapped to a generic "fail" check so the
@@ -244,12 +287,13 @@ export async function performReadinessCheck(
   db: DbLike,
   redis: RedisLike,
 ): Promise<ReadinessResult> {
-  const [dbResult, rpcResult, lagResult, queueResult] =
+  const [dbResult, rpcResult, lagResult, queueResult, horizonResult] =
     await Promise.allSettled([
       checkDatabase(db),
       checkSorobanRpc(),
       checkIndexerLag(db),
       checkQueue(redis),
+      checkHorizon(),
     ]);
 
   const now = Date.now();
@@ -267,6 +311,7 @@ export async function performReadinessCheck(
     sorobanRpc: unwrap(rpcResult, "Soroban RPC check threw unexpectedly"),
     indexerLag: unwrap(lagResult, "Indexer lag check threw unexpectedly"),
     queue: unwrap(queueResult, "Queue check threw unexpectedly"),
+    horizon: unwrap(horizonResult, "Horizon check threw unexpectedly"),
   };
 
   const ready = Object.values(checks).every((c) => c.status === "pass");
