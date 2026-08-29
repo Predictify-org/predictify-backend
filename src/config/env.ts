@@ -1,14 +1,14 @@
 import { envSchema, formatEnvErrors } from "./env-schema";
 
+const parsed = envSchema.safeParse(process.env);
+
 if (!parsed.success) {
   if (process.env.NODE_ENV !== "test") {
-    console.error("“ invalid environment configuration:\n" + formatEnvErrors(parsed.error));
+    console.error("❌ Invalid environment configuration:\n" + formatEnvErrors(parsed.error));
     process.exit(1);
   }
 }
 
-export const env = Object.freeze({
-  ...(parsed.success ? parsed.data : {}),
-  anomalyDetectorMaxMemoryEntries: Math.min(Number(process.env.ANOMALY_DETECTOR_MAX_MEMORY_ENTRIES)||10000, 100000),
-  anomalyDetectorMaxAlertCardinality: Math.min(Number(process.env.ANOMALY_DETECTOR_MAX_ALERT_CARDINALITY)||1000, 10000),
-});
+export const env = parsed.success
+  ? parsed.data
+  : ({} as ReturnType<typeof envSchema.parse>);

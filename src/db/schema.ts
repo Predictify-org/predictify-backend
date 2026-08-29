@@ -723,6 +723,62 @@ export type MarketWatcher = typeof marketWatchers.$inferSelect;
 export type NewMarketWatcher = typeof marketWatchers.$inferInsert;
 
 // ---------------------------------------------------------------------------
+// Market Watcher Jobs
+// ---------------------------------------------------------------------------
+/**
+ * market_watcher_jobs — durable job runs for market watcher notifications.
+ *
+ * Each row tracks a single market watcher notification execution attempt.
+ * `jobKey` enforces the database-level idempotency boundary so concurrent
+ * triggers, failovers, and retries never duplicate watcher notifications.
+ */
+export const marketWatcherJobs = pgTable(
+  "market_watcher_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    marketId: text("market_id")
+      .notNull()
+      .references(() => markets.id, { onDelete: "cascade" }),
+    jobKey: text("job_key").notNull().unique(),
+    eventType: text("event_type").notNull(),
+    status: text("status").notNull().default("pending"),
+    attempt: integer("attempt").notNull().default(0),
+    leaseToken: text("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    watchersNotified: integer("watchers_notified").notNull().default(0),
+    payload: jsonb("payload").default({}),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    marketWatcherJobsMarketEventIdx: index("market_watcher_jobs_market_event_idx").on(
+      t.marketId,
+      t.eventType,
+    ),
+    marketWatcherJobsReadyIdx: index("market_watcher_jobs_ready_idx").on(
+      t.status,
+      t.nextAttemptAt,
+    ),
+    marketWatcherJobsLeaseIdx: index("market_watcher_jobs_lease_idx").on(
+      t.status,
+      t.leaseUntil,
+    ),
+  }),
+);
+
+export type MarketWatcherJob = typeof marketWatcherJobs.$inferSelect;
+export type NewMarketWatcherJob = typeof marketWatcherJobs.$inferInsert;
+
+
+// ---------------------------------------------------------------------------
 // Referrals
 // ---------------------------------------------------------------------------
 /**

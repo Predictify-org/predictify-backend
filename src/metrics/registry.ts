@@ -78,6 +78,33 @@ export const scheduledReportLeaseConflictsTotal = new Counter({
   registers: [register],
 });
 
+export const marketWatcherJobRunsTotal = new Counter({
+  name: "market_watcher_job_runs_total",
+  help: "Market watcher job runs by terminal outcome",
+  labelNames: ["status"] as const,
+  registers: [register],
+});
+
+export const marketWatcherJobRetriesTotal = new Counter({
+  name: "market_watcher_job_retries_total",
+  help: "Market watcher job retry attempts by reason",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const marketWatcherLeaseConflictsTotal = new Counter({
+  name: "market_watcher_lease_conflicts_total",
+  help: "Market watcher jobs skipped because another worker owns the lease",
+  registers: [register],
+});
+
+export const marketWatcherNotificationsTotal = new Counter({
+  name: "market_watcher_notifications_total",
+  help: "Total number of market watcher notifications generated and dispatched",
+  registers: [register],
+});
+
+
 export const webhookDeliveriesTotal = new Counter({
   name: "webhook_deliveries_total",
   help: "Total number of webhook deliveries, segmented by outcome status (success, failed)",
