@@ -34,7 +34,7 @@ import {
   patchSubscriptionBodySchema,
   subscriptionIdParamSchema,
 } from "../validators/subscriptions";
-import { createAuditLog, sanitizeState } from "../services/auditService";
+import { createAuditLog } from "../services/auditService";
 import { getCorrelationId } from "../middleware/correlation";
 
 export const subscriptionsRouter = Router();
@@ -264,7 +264,7 @@ subscriptionsRouter.delete("/:id", async (req, res, next) => {
       throw RouteErrorFactory.notFound("Subscription not found");
     }
 
-    const result = await db
+    await db
       .delete(webhookSubscriptions)
       .where(eq(webhookSubscriptions.id, id));
 

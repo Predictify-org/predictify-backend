@@ -28,6 +28,7 @@ import {
   eventTypeSchema,
   webhookUrlSchema,
 } from "../../validators/subscriptions";
+import { createAuditLog } from "../../services/auditService";
 
 jest.mock("../../services/auditService", () => ({
   createAuditLog: jest.fn().mockResolvedValue("corr-id"),
@@ -70,13 +71,6 @@ const mockSubscription = {
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 };
-
-// Public-facing serialisation omits the secret field
-const publicSubscription = (() => {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { secret: _s, ...pub } = mockSubscription;
-  return pub;
-})();
 
 // ---------------------------------------------------------------------------
 // App factory
@@ -482,7 +476,6 @@ describe("Mutations", () => {
 
        expect(response.status).toBe(201);
        expect(response.body.data).toEqual(JSON.parse(JSON.stringify(newRow)));
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
          action: "admin.subscription.create",
          entityType: "Subscription",
@@ -505,7 +498,6 @@ describe("Mutations", () => {
 
        expect(response.status).toBe(200);
        expect(response.body.data).toEqual(JSON.parse(JSON.stringify(updated)));
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
          action: "admin.subscription.update",
          entityType: "Subscription",
@@ -524,7 +516,6 @@ describe("Mutations", () => {
        const response = await request(app).delete(`/api/subscriptions/${existing.id}`);
 
        expect(response.status).toBe(204);
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
          action: "admin.subscription.delete",
          entityType: "Subscription",
@@ -542,7 +533,6 @@ describe("Mutations", () => {
 
        await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
          correlationId: expect.any(String),
        }));
@@ -556,7 +546,6 @@ describe("Mutations", () => {
 
        await request(app).post("/api/subscriptions").send({ url: newRow.url, events: newRow.events });
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
          metadata: expect.objectContaining({ endpoint: "/api/subscriptions" }),
        }));
@@ -573,8 +562,7 @@ describe("Mutations", () => {
 
        await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
 
-       const { createAuditLog } = require("../../services/auditService");
-       const callArgs = createAuditLog.mock.calls[0][0];
+       const callArgs = (createAuditLog as jest.Mock).mock.calls[0][0] as { beforeState: { secret: string } };
        expect(callArgs.beforeState.secret).toBe("[REDACTED]");
      });
 
@@ -589,8 +577,7 @@ describe("Mutations", () => {
 
        await request(app).patch(`/api/subscriptions/${existing.id}`).send({ url: updated.url });
 
-       const { createAuditLog } = require("../../services/auditService");
-       const callArgs = createAuditLog.mock.calls[0][0];
+       const callArgs = (createAuditLog as jest.Mock).mock.calls[0][0] as { afterState: { secret: string } };
        expect(callArgs.afterState.secret).toBe("[REDACTED]");
      });
 
@@ -599,14 +586,12 @@ describe("Mutations", () => {
 
        await request(app).get("/api/subscriptions");
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).not.toHaveBeenCalled();
      });
 
      it("POST /api/subscriptions does not audit on validation failure", async () => {
        await request(app).post("/api/subscriptions").send({ url: "http://not-https.com", events: [] });
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).not.toHaveBeenCalled();
      });
 
@@ -615,7 +600,6 @@ describe("Mutations", () => {
 
        await request(app).patch("/api/subscriptions/123e4567-e89b-12d3-a456-426614174000").send({ url: "https://new.example.com" });
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).not.toHaveBeenCalled();
      });
 
@@ -624,7 +608,6 @@ describe("Mutations", () => {
 
        await request(app).delete("/api/subscriptions/123e4567-e89b-12d3-a456-426614174000");
 
-       const { createAuditLog } = require("../../services/auditService");
        expect(createAuditLog).not.toHaveBeenCalled();
      });
    });

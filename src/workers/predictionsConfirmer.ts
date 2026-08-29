@@ -62,8 +62,8 @@ export type WebhookEmitter = (
 
 /** Default emitter that delegates to the production webhook dispatcher. */
 export const defaultWebhookEmitter: WebhookEmitter = async (
-  eventType: string,
-  payload: Record<string, unknown>,
+  _eventType: string,
+  _payload: Record<string, unknown>,
 ): Promise<void> => {
   // We need a db handle; in production the service creates one internally.
   // This function signature matches what dispatchEvent expects minus the db arg.

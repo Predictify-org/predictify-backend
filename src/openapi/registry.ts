@@ -599,6 +599,14 @@ registry.registerPath({
         },
       },
     },
+    400: {
+      description: "Validation error — invalid query parameters",
+      content: {
+        "application/json": {
+          schema: ValidationErrorBody,
+        },
+      },
+    },
     401: {
       description: "Unauthorized",
       content: {
@@ -636,6 +644,14 @@ registry.registerPath({
       content: {
         "application/json": {
           schema: z.object({ data: z.array(Market), nextCursor: z.string().nullable() }),
+        },
+      },
+    },
+    400: {
+      description: "Validation error — invalid query parameters",
+      content: {
+        "application/json": {
+          schema: ValidationErrorBody,
         },
       },
     },
@@ -2588,9 +2604,9 @@ const PredictionRow = z
 
 const PredictionsListResponse = z
   .object({
-    items: z.array(PredictionRow),
+    data: z.array(PredictionRow),
     /** Opaque cursor for the next page, or null if this is the last page. */
-    next_cursor: z.string().nullable(),
+    nextCursor: z.string().nullable(),
     /** Optional total count for clients that need it. */
     total: z.number().int().nonnegative().optional(),
   })
@@ -2613,12 +2629,12 @@ registry.registerPath({
   path: "/api/predictions",
   operationId: "listPredictions",
   tags: ["Predictions"],
-  summary: "List the authenticated user\u2019s predictions",
+  summary: "List the authenticated user’s predictions",
   description:
     "Returns a cursor-paginated list of predictions placed by the caller. " +
     "Sort order is `createdAt DESC, id DESC`. " +
-    "Pass the returned `next_cursor` as `?cursor=` to fetch the next page. " +
-    "`next_cursor` is `null` when no further pages exist.",
+    "Pass the returned `nextCursor` as `?cursor=` to fetch the next page. " +
+    "`nextCursor` is `null` when no further pages exist.",
   security: [{ bearerAuth: [] }],
   request: {
     query: z.object({
@@ -2628,7 +2644,7 @@ registry.registerPath({
       status: PredictionStatus.optional(),
       /** Filter by chosen outcome value (e.g. "yes" / "no"). */
       outcome: z.string().min(1).max(64).optional(),
-      /** Opaque cursor from the previous page’s `next_cursor`. */
+      /** Opaque cursor from the previous page’s `nextCursor`. */
       cursor: z.string().optional(),
       /** Page size — default 20, max 100. */
       limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
@@ -2643,7 +2659,7 @@ registry.registerPath({
           examples: {
             authenticatedPredictionsPage: {
               value: {
-                items: [
+                data: [
                   {
                     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                     marketId: "market_123",
@@ -2657,7 +2673,7 @@ registry.registerPath({
                     resolutionTime: "2026-06-01T12:00:00.000Z",
                   },
                 ],
-                next_cursor: "cursor_abc123",
+                nextCursor: "cursor_abc123",
               },
             },
           },
@@ -2919,6 +2935,10 @@ registry.registerPath({
           schema: AdminRouteListResponse,
         },
       },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
     },
     403: {
       description: "Forbidden",
@@ -3438,6 +3458,11 @@ registry.registerPath({
     "Returns the current sliding-window rate-limit usage for a target Stellar address. " +
     "Admin-only and read-only.",
   security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      address: z.string().describe("Target Stellar address"),
+    }),
+  },
   responses: {
     200: {
       description: "Current rate-limit state for the requested address",
@@ -3883,6 +3908,10 @@ registry.registerPath({
           },
         },
       },
+    },
+    400: {
+      description: "Validation error — invalid query parameters",
+      content: { "application/json": { schema: ValidationErrorBody } },
     },
     401: {
       description: "Missing or invalid JWT",

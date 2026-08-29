@@ -153,7 +153,7 @@ predictionsRouter.get(
 
       res.status(200).json(payload);
     } catch (err) {
-      if (err instanceof Error && (err as any).status === 404) {
+      if (err instanceof Error && (err as { status?: number }).status === 404) {
         logger.warn({ reqId, marketId }, "market_predictions_list_not_found");
         res.status(404).json({
           error: {

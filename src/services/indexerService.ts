@@ -2,7 +2,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { getPool } from "../db/client";
-import { detectReorgs, dedupeEvents, type RecoveryEvent } from "./indexerRecovery";
+import { dedupeEvents, type RecoveryEvent } from "./indexerRecovery";
 
 export const INDEXER_CURSOR_ID = 1;
 

@@ -4,8 +4,8 @@ import { alertsRouter } from "./alerts";
 import { errorHandler } from "../middleware/errorHandler";
 
 jest.mock("../middleware/requireAuth", () => ({
-  requireAuth: (req: any, _res: any, next: any) => {
-    req.user = { id: "user-123" };
+  requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    (req as { user?: { id: string } }).user = { id: "user-123" };
     next();
   },
 }));

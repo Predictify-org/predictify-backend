@@ -3,14 +3,14 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { resetOpenApiCache, getOpenApiSpec } from "../src/openapi/builder";
 
-type Method = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
+export type Method = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
 
-interface RouteEntry {
+export interface RouteEntry {
   method: Method;
   path: string;
 }
 
-const EXPECTED_ROUTES: RouteEntry[] = [
+export const EXPECTED_ROUTES: RouteEntry[] = [
   { method: "get", path: "/health" },
   { method: "get", path: "/healthz/dependencies" },
   { method: "get", path: "/metrics" },
@@ -80,122 +80,261 @@ const EXPECTED_ROUTES: RouteEntry[] = [
   { method: "post", path: "/api/referrals" },
 ];
 
-function key(route: RouteEntry): string {
+export function routeKey(route: RouteEntry): string {
   return `${route.method.toUpperCase()} ${route.path}`;
 }
 
-function main(): number {
-  resetOpenApiCache();
-  const spec = getOpenApiSpec();
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+}
 
-  let exitCode = 0;
+/**
+ * Normalizes line endings so comparisons are deterministic across operating systems.
+ */
+export function normalizeLineEndings(str: string): string {
+  return str.replace(/\r\n/g, "\n").trim();
+}
 
-  // 1. Basic structural validation
+/**
+ * Validates OpenAPI document top-level structure.
+ */
+export function validateStructure(spec: any): ValidationResult {
+  const errors: string[] = [];
+
+  if (!spec || typeof spec !== "object") {
+    return { valid: false, errors: ["Spec is not an object or is empty"] };
+  }
+
   if (typeof spec.openapi !== "string" || !spec.openapi.startsWith("3.")) {
-    console.error("FAIL: openapi version is missing or not 3.x");
-    exitCode = 1;
+    errors.push("openapi version is missing or not 3.x (expected 3.1.0)");
   }
 
-  if (!spec.info) {
-    console.error("FAIL: info section is missing");
-    exitCode = 1;
+  if (!spec.info || typeof spec.info !== "object") {
+    errors.push("info section is missing");
+  } else {
+    if (!spec.info.title) errors.push("info.title is missing");
+    if (!spec.info.version) errors.push("info.version is missing");
   }
 
-  if (!spec.paths || Object.keys(spec.paths).length === 0) {
-    console.error("FAIL: no paths defined");
-    exitCode = 1;
+  if (!spec.paths || typeof spec.paths !== "object" || Object.keys(spec.paths).length === 0) {
+    errors.push("no paths defined in spec");
   }
 
-  // 2. Collect documented routes
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validates route coverage and detects missing or extra routes.
+ */
+export function validateRouteCoverage(
+  spec: any,
+  expectedRoutes: RouteEntry[] = EXPECTED_ROUTES,
+): ValidationResult {
+  const errors: string[] = [];
   const documented = new Set<string>();
 
-  for (const [pathStr, pathItem] of Object.entries(spec.paths ?? {})) {
-    const methods = ["get", "post", "put", "patch", "delete"] as Method[];
+  for (const [pathStr, pathItem] of Object.entries(spec?.paths ?? {})) {
+    const methods = ["get", "post", "put", "patch", "delete", "head", "options"] as Method[];
     for (const method of methods) {
-      const op = (pathItem as Record<string, unknown>)[method] as
-        | Record<string, unknown>
-        | undefined;
+      const op = (pathItem as Record<string, unknown>)?.[method];
       if (op) {
-        documented.add(key({ method, path: pathStr }));
+        documented.add(routeKey({ method, path: pathStr }));
       }
     }
   }
 
-  // 3. Check for missing routes
-  const expectedSet = new Set(EXPECTED_ROUTES.map(key));
-  const missing: string[] = [];
-  const extra: string[] = [];
+  const expectedSet = new Set(expectedRoutes.map(routeKey));
 
-  for (const route of EXPECTED_ROUTES) {
-    if (!documented.has(key(route))) {
-      missing.push(key(route));
+  for (const route of expectedRoutes) {
+    const k = routeKey(route);
+    if (!documented.has(k)) {
+      errors.push(`MISSING route from OpenAPI spec: ${k}`);
     }
   }
 
   for (const doc of documented) {
     if (!expectedSet.has(doc)) {
-      extra.push(doc);
+      errors.push(`EXTRA undocumented route found in OpenAPI spec: ${doc}`);
     }
   }
 
-  if (missing.length > 0) {
-    console.error("FAIL: routes missing from OpenAPI spec:");
-    for (const r of missing) {
-      console.error(`  MISSING  ${r}`);
-    }
-    exitCode = 1;
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validates that the checked-in openapi.yaml artifact matches the generated spec.
+ */
+export function validateArtifactDrift(
+  spec: any,
+  artifactPath = path.resolve(__dirname, "..", "openapi.yaml"),
+): ValidationResult {
+  const errors: string[] = [];
+
+  if (!fs.existsSync(artifactPath)) {
+    return {
+      valid: false,
+      errors: [`OpenAPI artifact file not found at ${artifactPath}`],
+    };
   }
 
-  if (extra.length > 0) {
-    console.error("FAIL: undocumented routes found in spec (not in Express):");
-    for (const r of extra) {
-      console.error(`  EXTRA    ${r}`);
-    }
-    exitCode = 1;
-  }
-
-  // The checked-in YAML must be byte-for-byte reproducible from the registry.
-  // This catches manual edits and stale generated artifacts before deployment.
   const generated = yaml.dump(spec, {
     indent: 2,
     lineWidth: 120,
     noRefs: false,
     sortKeys: false,
   });
-  const artifactPath = path.resolve(__dirname, "..", "openapi.yaml");
+
   const checkedIn = fs.readFileSync(artifactPath, "utf8");
-  if (generated !== checkedIn) {
-    console.error("FAIL: openapi.yaml is stale; run npm run openapi:generate and commit the result");
-    exitCode = 1;
+
+  if (normalizeLineEndings(generated) !== normalizeLineEndings(checkedIn)) {
+    errors.push(
+      "openapi.yaml is stale or does not match generated registry spec; run `npm run openapi:generate` and commit the result",
+    );
   }
 
-  // Representative contract invariants: paginated endpoints must describe
-  // both cursor/limit inputs and a validation error, while protected routes
-  // must carry the bearer security requirement.
-  const paths = spec.paths as Record<string, Record<string, any>>;
-  for (const route of ["/api/users", "/api/users/{address}/predictions"]) {
-    const operation = paths[route]?.get;
-    const parameterNames = new Set((operation?.parameters ?? []).map((p: any) => p.name));
-    if (!parameterNames.has("cursor") || !parameterNames.has("limit") || !operation?.responses?.["400"]) {
-      console.error(`FAIL: ${route} must document cursor, limit, and a 400 validation response`);
-      exitCode = 1;
-    }
-  }
-  for (const [route, item] of Object.entries(paths)) {
-    for (const [method, operation] of Object.entries(item)) {
-      if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
-      if (operation.security && operation.security.length > 0 && !operation.responses?.["401"] && !operation.responses?.["403"]) {
-        console.error(`FAIL: protected ${method.toUpperCase()} ${route} must document an auth error response`);
-        exitCode = 1;
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validates per-route contract invariants across all operations in the spec.
+ */
+export function validateRouteInvariants(spec: any): ValidationResult {
+  const errors: string[] = [];
+  const paths = (spec?.paths ?? {}) as Record<string, Record<string, any>>;
+  const operationIds = new Set<string>();
+  const methods = ["get", "post", "put", "patch", "delete"] as const;
+
+  for (const [pathStr, pathItem] of Object.entries(paths)) {
+    const pathParamsInUrl = Array.from(pathStr.matchAll(/\{([^}]+)\}/g)).map((m) => m[1]);
+
+    for (const method of methods) {
+      const op = pathItem[method];
+      if (!op) continue;
+
+      const opKey = `${method.toUpperCase()} ${pathStr}`;
+
+      // 1. Operation ID presence & uniqueness
+      if (!op.operationId || typeof op.operationId !== "string" || op.operationId.trim() === "") {
+        errors.push(`${opKey}: missing or invalid operationId`);
+      } else {
+        if (operationIds.has(op.operationId)) {
+          errors.push(`${opKey}: duplicate operationId "${op.operationId}"`);
+        }
+        operationIds.add(op.operationId);
+      }
+
+      // 2. Tags
+      if (!op.tags || !Array.isArray(op.tags) || op.tags.length === 0) {
+        errors.push(`${opKey}: missing tags array`);
+      }
+
+      // 3. Summary or Description
+      if (!op.summary && !op.description) {
+        errors.push(`${opKey}: missing summary and description`);
+      }
+
+      // 4. Response definitions
+      if (!op.responses || typeof op.responses !== "object" || Object.keys(op.responses).length === 0) {
+        errors.push(`${opKey}: no responses defined`);
+      } else {
+        const statusCodes = Object.keys(op.responses);
+        const hasSuccess = statusCodes.some((code) => code.startsWith("2") || code === "304");
+        if (!hasSuccess) {
+          errors.push(`${opKey}: missing 2xx or 304 success response definition`);
+        }
+
+        // Security requirement check: protected routes must document 401 or 403
+        if (op.security && Array.isArray(op.security) && op.security.length > 0) {
+          const hasAuthError = statusCodes.includes("401") || statusCodes.includes("403");
+          if (!hasAuthError) {
+            errors.push(`${opKey}: protected route must document an auth error response (401/403)`);
+          }
+        }
+      }
+
+      // 5. Path parameter parity
+      if (pathParamsInUrl.length > 0) {
+        const declaredParams = (op.parameters ?? [])
+          .filter((p: any) => p.in === "path")
+          .map((p: any) => p.name);
+
+        for (const paramName of pathParamsInUrl) {
+          if (!declaredParams.includes(paramName)) {
+            errors.push(
+              `${opKey}: path parameter '{${paramName}}' in URL is missing from operation parameters`,
+            );
+          }
+        }
+      }
+
+      // 6. Paginated route contract invariants
+      const paramNames = new Set((op.parameters ?? []).map((p: any) => p.name));
+      const isPaginated = paramNames.has("cursor") || paramNames.has("limit");
+      if (isPaginated) {
+        if (!op.responses?.["400"]) {
+          errors.push(`${opKey}: paginated endpoint must document a 400 validation error response`);
+        }
       }
     }
   }
 
-  if (exitCode === 0) {
-    console.log(`OK: routes, reproducible artifact, and representative contracts validated`);
-  }
-
-  return exitCode;
+  return { valid: errors.length === 0, errors };
 }
 
-process.exit(main());
+/**
+ * Runs all OpenAPI drift and invariant checks.
+ */
+export function checkOpenApi(
+  spec = getOpenApiSpec(),
+  expectedRoutes: RouteEntry[] = EXPECTED_ROUTES,
+  artifactPath = path.resolve(__dirname, "..", "openapi.yaml"),
+): { success: boolean; errors: string[] } {
+  const allErrors: string[] = [];
+
+  const structResult = validateStructure(spec);
+  if (!structResult.valid) {
+    allErrors.push(...structResult.errors.map((e) => `[STRUCTURE] ${e}`));
+  }
+
+  const coverageResult = validateRouteCoverage(spec, expectedRoutes);
+  if (!coverageResult.valid) {
+    allErrors.push(...coverageResult.errors.map((e) => `[ROUTE DRIFT] ${e}`));
+  }
+
+  const artifactResult = validateArtifactDrift(spec, artifactPath);
+  if (!artifactResult.valid) {
+    allErrors.push(...artifactResult.errors.map((e) => `[ARTIFACT DRIFT] ${e}`));
+  }
+
+  const invariantResult = validateRouteInvariants(spec);
+  if (!invariantResult.valid) {
+    allErrors.push(...invariantResult.errors.map((e) => `[INVARIANT] ${e}`));
+  }
+
+  return {
+    success: allErrors.length === 0,
+    errors: allErrors,
+  };
+}
+
+export function main(): number {
+  resetOpenApiCache();
+  const spec = getOpenApiSpec();
+  const { success, errors } = checkOpenApi(spec);
+
+  if (!success) {
+    console.error(`FAIL: OpenAPI drift checks failed with ${errors.length} issue(s):`);
+    for (const err of errors) {
+      console.error(`  ${err}`);
+    }
+    return 1;
+  }
+
+  console.log("OK: All routes, reproducible OpenAPI artifact, and contract invariants validated successfully.");
+  return 0;
+}
+
+if (require.main === module) {
+  process.exit(main());
+}

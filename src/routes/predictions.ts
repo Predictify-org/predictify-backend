@@ -19,10 +19,6 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth";
 import { claimWinnings, ClaimError } from "../services/claimService";
-import { Router, Request, Response, NextFunction } from "express";
-import { z } from "zod";
-import { requireAuth } from "../middleware/requireAuth";
-import { claimWinnings, ClaimError } from "../services/claimService";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { createPerUserRateLimiter } from "../middleware/rateLimit";
@@ -32,8 +28,6 @@ import { createShareRouter } from "./predictions/share";
 import { predictionsHealthRouter } from "./predictions/health";
 import { listPredictions } from "../repositories/predictionRepo";
 import { conditionalGet } from "../middleware/etag";
-import { logger } from "../config/logger";
-import { getRequestId } from "../lib/requestContext";
 import { clampLimit } from "../utils/cursor";
 import {
   predictionsListTotal,
@@ -41,9 +35,8 @@ import {
   predictionsRequestDuration,
 } from "../metrics/registry";
 import type { AuthenticatedRequest } from "../middleware/auth";
-import { listPredictionsQuerySchema } from "../validators/predictions";
+import { listPredictionsQuerySchema, predictionIdParamSchema } from "../validators/predictions";
 import { requestTimeout } from "../middleware/timeout";
-import { conditionalGet } from "../middleware/etag";
 
 export const predictionsRouter = Router();
 
@@ -62,6 +55,47 @@ predictionsRouter.use(requestTimeout(15000));
 predictionsRouter.use("/", createShareRouter());
 predictionsRouter.use("/", cancelRouter);
 predictionsRouter.use("/", predictionsHealthRouter);
+
+/**
+ * GET /api/predictions/:id/explain
+ * Returns the resolution computation trail for a prediction (educational endpoint).
+ * Shows oracle inputs, market resolution, and payout calculation.
+ * Public — no authentication required.
+ */
+predictionsRouter.get("/:id/explain", async (req, res, next) => {
+  const startMs = Date.now();
+  try {
+    const paramsResult = predictionIdParamSchema.safeParse(req.params);
+    if (!paramsResult.success) {
+      predictionExplainTotal.inc({ outcome: "error" });
+      return res.status(400).json({
+        error: {
+          code: "validation_error",
+          message: paramsResult.error.issues[0]?.message ?? "Invalid prediction ID",
+          requestId: getRequestId(),
+        },
+      });
+    }
+    const { id } = paramsResult.data;
+    const explanation = await getPredictionExplanation(id);
+    predictionExplainTotal.inc({ outcome: "success" });
+    predictionsRequestDuration.observe(
+      { handler: "explain", outcome: "success" },
+      (Date.now() - startMs) / 1000,
+    );
+    if (conditionalGet(explanation, req, res)) return;
+    res.json(explanation);
+  } catch (error) {
+    predictionExplainTotal.inc({ outcome: "error" });
+    predictionsRequestDuration.observe(
+      { handler: "explain", outcome: "error" },
+      (Date.now() - startMs) / 1000,
+    );
+    next(error);
+  }
+});
+
+
 
 // ── Authenticated routes ──────────────────────────────────────────────────
 predictionsRouter.use(requireAuth);
@@ -233,7 +267,7 @@ predictionsRouter.get(
         cursor,
       });
 
-      const payload = { items: page.data, next_cursor: page.nextCursor };
+      const payload = { data: page.data, nextCursor: page.nextCursor };
       if (conditionalGet(payload, req, res)) return;
 
       logger.info(
@@ -252,7 +286,7 @@ predictionsRouter.get(
         (Date.now() - startMs) / 1000,
       );
 
-      res.json({ items: page.data, next_cursor: page.nextCursor });
+      res.json(payload);
     } catch (err) {
       predictionsListTotal.inc({ outcome: "error" });
       predictionsRequestDuration.observe(
@@ -264,28 +298,3 @@ predictionsRouter.get(
   },
 );
 
-/**
- * GET /api/predictions/:id/explain
- * Returns the resolution computation trail for a prediction (educational endpoint).
- * Shows oracle inputs, market resolution, and payout calculation.
- */
-predictionsRouter.get("/:id/explain", async (req, res, next) => {
-  const startMs = Date.now();
-  try {
-    const { id } = req.params;
-    const explanation = await getPredictionExplanation(id);
-    predictionExplainTotal.inc({ outcome: "success" });
-    predictionsRequestDuration.observe(
-      { handler: "explain", outcome: "success" },
-      (Date.now() - startMs) / 1000,
-    );
-    res.json(explanation);
-  } catch (error) {
-    predictionExplainTotal.inc({ outcome: "error" });
-    predictionsRequestDuration.observe(
-      { handler: "explain", outcome: "error" },
-      (Date.now() - startMs) / 1000,
-    );
-    next(error);
-  }
-});

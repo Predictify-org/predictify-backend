@@ -223,3 +223,26 @@ export const authEndpointDuration = new Histogram({
   buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
   registers: [register],
 });
+
+export const predictionsListTotal = new Counter({
+  name: "predictions_list_total",
+  help: "Total number of list predictions requests",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
+export const predictionExplainTotal = new Counter({
+  name: "prediction_explain_total",
+  help: "Total number of prediction explanation requests",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
+export const predictionsRequestDuration = new Histogram({
+  name: "predictions_request_duration_seconds",
+  help: "Request duration in seconds for prediction endpoints",
+  labelNames: ["handler", "outcome"] as const,
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
+

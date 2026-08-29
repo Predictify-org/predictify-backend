@@ -16,20 +16,17 @@ import { drainFingerprintRequests } from "./routes/fingerprint";
 import { drainReportsRequests } from "./routes/reports";
 
 const app = createApp();
-let webhookWorker: WebhookWorker | null = null;
-let probeHandle: ReturnType<typeof setInterval> | null = null;
-let predictionsConfirmerHandle: ReturnType<typeof setInterval> | null = null;
 
 connectWithRetry()
   .then(() => {
-    webhookWorker = new WebhookWorker(db);
+    const webhookWorker = new WebhookWorker(db);
     webhookWorker.start();
     marketResolverWorker.start();
     backupVerificationWorker.start();
     reconciliationWorker.start();
     startSlowQueryAlerter();
-    predictionsConfirmerHandle = startPredictionsConfirmer();
-    probeHandle = startIndexerHealthProbe();
+    startPredictionsConfirmer();
+    startIndexerHealthProbe();
 
     const server = app.listen(env.PORT, () => {
       logger.info({ port: env.PORT, env: env.NODE_ENV }, "predictify-backend listening");
