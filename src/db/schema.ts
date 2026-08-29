@@ -739,3 +739,36 @@ export const referrals = pgTable(
 
 export type Referral = typeof referrals.$inferSelect;
 export type NewReferral = typeof referrals.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Referral reward allocations
+// ---------------------------------------------------------------------------
+/**
+ * One immutable reward allocation per referral. Both unique constraints are
+ * required: the referral constraint prevents double payment, while the key
+ * constraint makes retried requests return the original allocation.
+ */
+export const referralRewardAllocations = pgTable(
+  "referral_reward_allocations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    referralId: uuid("referral_id")
+      .notNull()
+      .references(() => referrals.id, { onDelete: "cascade" })
+      .unique(),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    amount: text("amount").notNull(),
+    asset: text("asset").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    referralRewardAllocationsReferralIdIdx: index(
+      "referral_reward_allocations_referral_id_idx",
+    ).on(t.referralId),
+  }),
+);
+
+export type ReferralRewardAllocation = typeof referralRewardAllocations.$inferSelect;
+export type NewReferralRewardAllocation = typeof referralRewardAllocations.$inferInsert;
