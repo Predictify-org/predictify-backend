@@ -66,11 +66,20 @@ export function errorHandler(
       { err, path: req.path, method: req.method, correlationId, requestId: reqId },
       "validation_error",
     );
+    const fields: Record<string, string[]> = {};
+    for (const issue of err.issues) {
+      const path = issue.path.join(".") || "_root";
+      if (!fields[path]) {
+        fields[path] = [];
+      }
+      fields[path].push(issue.message);
+    }
+
     res.status(400).json({
       error: {
         code: ErrorCodes.VALIDATION_ERROR,
         message: "Validation failed",
-        details: err.issues,
+        fields,
         correlationId,
       },
     });

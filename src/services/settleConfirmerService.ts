@@ -245,10 +245,10 @@ export class SettleConfirmerService {
   }
 }
 
-// ─── Default Horizon client (production) ──────────────────────────────────────
+import { fetchWithRetry } from "../lib/http";
 
 /**
- * Production Horizon client that uses `fetch` to call the Horizon REST API.
+ * Production Horizon client that uses `fetchWithRetry` to call the Horizon REST API.
  */
 export class HttpHorizonClient implements HorizonClient {
   private readonly baseUrl: string;
@@ -259,7 +259,7 @@ export class HttpHorizonClient implements HorizonClient {
 
   async getTransaction(txHash: string): Promise<TransactionInfo> {
     const url = `${this.baseUrl}/transactions/${txHash}`;
-    const response = await fetch(url);
+    const response = await fetchWithRetry(url);
 
     if (!response.ok) {
       if (response.status === 404) {
@@ -283,7 +283,7 @@ export class HttpHorizonClient implements HorizonClient {
 
   async getCurrentLedger(): Promise<number> {
     const url = this.baseUrl;
-    const response = await fetch(url);
+    const response = await fetchWithRetry(url);
 
     if (!response.ok) {
       throw new Error(

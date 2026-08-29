@@ -1,3 +1,4 @@
+import { v7 as uuidv7 } from "uuid";
 import {
   pgTable,
   uuid,
@@ -143,18 +144,30 @@ export const markets = pgTable("markets", {
     .defaultNow(),
 });
 
-export const marketAuditLog = pgTable("market_audit_log", {
-  marketId: text("market_id")
-    .notNull()
-    .references(() => markets.id),
+export const marketAuditLog = pgTable(
+  "market_audit_log",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    marketId: text("market_id")
+      .notNull()
+      .references(() => markets.id),
   adminAddress: text("admin_address").notNull(),
   action: text("action").notNull(),
   beforeState: jsonb("before_state").notNull(),
   afterState: jsonb("after_state").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    marketAuditLogCreatedAtIdIdx: index("market_audit_log_created_at_id_idx").on(
+      t.createdAt,
+      t.id,
+    ),
+  }),
+);
 
 export const predictions = pgTable("predictions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -433,7 +446,9 @@ export const notifications = pgTable(
 export const auditLogs = pgTable(
   "audit_logs",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     action: text("action").notNull(),
     walletAddress: text("wallet_address"),
     ip: text("ip").notNull(),

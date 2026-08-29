@@ -197,7 +197,7 @@ export async function idempotency(
     } else if (typeof body === "object" && body !== null) {
       saveIdempotency(body);
     }
-    return originalSend(body as any);
+    return originalSend(body as Parameters<typeof originalSend>[0]);
   };
 
   next();

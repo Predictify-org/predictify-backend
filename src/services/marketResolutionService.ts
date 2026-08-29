@@ -229,7 +229,8 @@ export async function httpWebhookEmitter(
   const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(subscriber.url, {
+    const { fetchWithRetry } = await import("../lib/http");
+    const response = await fetchWithRetry(subscriber.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
