@@ -1,68 +1,71 @@
-/**
- * fraudDetector.ts — background worker that periodically scans recent
- * predictions for sybil / collusion clusters and persists `fraud_flags`.
- *
- * Designed to be invoked from:
- *   • a cron-style scheduler (every N minutes)
- *   • the existing in-process scheduler (`src/services/scheduler.ts`)
- *   • or one-off CLI runs (`node dist/workers/fraudDetector.js`)
- *
- * The worker itself is intentionally tiny — all logic lives in
- * `fraudService.ts` so it can be unit-tested without spinning up a job
- * runtime. A correlation id is generated per run so every log line and
- * persisted flag can be traced.
- */
-
 import { randomUUID } from "crypto";
 import { logger } from "../config/logger";
+import { env } from "../config/env";
 import {
-  DrizzleFraudRepo,
+  DrzzleFraudRepo,
   type FraudRepo,
   type RunScanOptions,
   type RunScanResult,
   runFraudScan,
 } from "../services/fraudService";
 
+export interface FraudDetectorConfig {
+  maxAlerts?: number;
+  maxAnomalies?: number;
+}
+
+export interface FraudRunScanOptions extends RunScanOptions {
+  maxAlerts?: number;
+  maxAnomalies?: number;
+}
+
+function positiveInt(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export class FraudDetectorWorker {
   private readonly repo: FraudRepo;
+  private readonly config: { maxAlerts: number; maxAnomalies: number };
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(repo: FraudRepo = new DrizzleFraudRepo()) {
+  constructor(
+    repo: FraudRepo = new DrzzleFraudRepo(),
+    config: FraudDetectorConfig = {},
+  ) {
     this.repo = repo;
+    this.config = {
+      maxAlerts: positiveInt(config.maxAlerts, env.FRAUD_SCAN_MAX_ALERTS),
+      maxAnomalies: positiveInt(config.maxAnomalies, env.FRAUD_SCAN_MAX_ANOMALIES),
+    };
   }
 
-  /** Run a single scan. Errors are caught and logged — the worker never throws. */
-  async runOnce(opts: RunScanOptions = {}): Promise<RunScanResult | null> {
+  async runOnce(opts: FraudRunScanOptions = {}): Promise<RunScanResult | null> {
     const correlationId = opts.correlationId ?? randomUUID();
-    const merged: RunScanOptions = { ...opts };
-    merged.correlationId = correlationId;
+    const merged: FraudRunScanOptions = {
+      ...opts,
+      correlationId,
+      maxAlerts: opts.maxAlerts ?? this.config.maxAlerts,
+      maxAnomalies: opts.maxAnomalies ?? this.config.maxAnomalies,
+    };
     try {
       const result = await runFraudScan(this.repo, merged);
       logger.info({ ...result }, "fraud_detector: run complete");
       return result;
     } catch (err) {
-      logger.error(
-        { correlationId, err },
-        "fraud_detector: run failed",
-      );
+      logger.error({ correlationId, err }, "fraud_detector: run failed");
       return null;
     }
   }
 
-  /**
-   * Start a recurring scan. Returns a stop handle.
-   * `intervalMs` defaults to 15 minutes; non-positive disables scheduling.
-   */
-  start(intervalMs = 15 * 60 * 1000, opts: RunScanOptions = {}): () => void {
+  start(intervalMs = 15 * 60 * 1000, opts: FraudRunScanOptions = {}): () => void {
     if (this.timer) {
       logger.warn("fraud_detector: already running, ignoring start()");
       return () => this.stop();
     }
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-      logger.warn(
-        { intervalMs },
-        "fraud_detector: invalid interval, not starting",
-      );
+      logger.warn({ intervalMs }, "fraud_detector: invalid interval, not starting");
       return () => undefined;
     }
 
@@ -85,21 +88,14 @@ export class FraudDetectorWorker {
   }
 }
 
-/** Singleton for production wiring. */
-export const fraudDetectorWorker = new FraudDetectorWorker();
+export const fraudDetectorWorker = new FraudDetectorGorker();
 
-// Allow `node dist/workers/fraudDetector.js` for ad-hoc runs.
 if (require.main === module) {
-  fraudDetectorWorker
-    .runOnce()
-    .then((res) => {
-       
-      console.log("fraud_scan", res);
-      process.exit(0);
-    })
-    .catch((err) => {
-       
-      console.error(err);
-      process.exit(1);
-    });
+  fraudDetectorWorker.runOnce().then((res) => {
+    console.log("fraud_scan", res);
+    process.exit(0);
+  }).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
