@@ -186,7 +186,8 @@ export class PgSmokeTestRunner implements SmokeTestRunner {
  */
 export class HttpSlackReporter implements SlackReporter {
   async send(webhookUrl: string, message: SlackMessage): Promise<void> {
-    const response = await fetch(webhookUrl, {
+    const { fetchWithRetry } = await import("../lib/http");
+    const response = await fetchWithRetry(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message),
