@@ -16,6 +16,7 @@ export const backupVerificationQueueName = "backup-verification";
 export const reconciliationQueueName = "reconciliation";
 export const marketResolutionQueueName = "market-resolution";
 export const scheduledReportQueueName = "scheduled-report-runs";
+export const marketWatcherQueueName = "market-watcher-jobs";
 
 export const webhookQueue = new Queue(webhookQueueName, {
   //  IORedis types conflict with BullMQ
@@ -41,5 +42,11 @@ export const scheduledReportQueue = new Queue(scheduledReportQueueName, {
   // IORedis types conflict with BullMQ
   connection: redisConnection,
 });
+
+export const marketWatcherQueue = new Queue(marketWatcherQueueName, {
+  // IORedis types conflict with BullMQ
+  connection: redisConnection,
+});
+
 
 export { Queue, Worker, QueueEvents };

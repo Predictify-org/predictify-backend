@@ -9,8 +9,7 @@ process.env.JWT_SECRET = "test-secret-with-at-least-32-characters";
 import request from "supertest";
 import express, { type Request, type Response, type NextFunction } from "express";
 
-jest.mock("../src/services/marketWatcherService");
-jest.mock("../src/middleware/auth", () => ({
+const authMock = {
   requireAuth: (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -19,7 +18,12 @@ jest.mock("../src/middleware/auth", () => ({
     (req as any).user = { id: "user-123", stellarAddress: "GABC123" };
     next();
   },
-}));
+};
+jest.mock("../src/middleware/auth", () => authMock);
+jest.mock("../src/middleware/requireAuth", () => authMock);
+jest.mock("../src/services/marketWatcherService");
+
+
 
 import * as marketWatcherService from "../src/services/marketWatcherService";
 import { watchersRouter } from "../src/routes/markets/watchers";

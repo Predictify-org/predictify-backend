@@ -196,3 +196,18 @@ export async function removeMarketWatcher(
 
   return deleted.length > 0;
 }
+
+/**
+ * Enqueues a notification job for all watchers of a given market.
+ * Idempotent: multiple calls with the same eventRef will not duplicate jobs or notifications.
+ */
+export async function notifyMarketWatchers(
+  marketId: string,
+  eventType: string,
+  eventRef: string,
+  payload: Record<string, unknown> = {},
+) {
+  const { enqueueMarketWatcherJob } = await import("./marketWatcherJobService");
+  return enqueueMarketWatcherJob(marketId, eventType, eventRef, payload);
+}
+
