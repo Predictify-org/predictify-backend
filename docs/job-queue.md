@@ -186,9 +186,9 @@ when `scheduler.schedule()` is called using a dependency-free 5-field parser:
   - Inclusive range: `a-b` (e.g. `1-5`)
   - Step on wildcard or range: `*/n` or `a-b/n` (e.g. `*/15`, `8-18/2`)
   - Comma-separated list: `a,b,c` combining any of the above (e.g. `0,30`, `1-5,10`)
-- **Calendar validation:** Impossible day/month combinations (such as `0 0 30 2 *` or `0 0 31 4 *`) are rejected at parse time; leap-day schedules (`0 0 29 2 *`) are permitted.
+- **Calendar validation & field matching:** Impossible day/month combinations (such as `0 0 30 2 *` or `0 0 31 4 *`) are rejected at parse time; leap-day schedules (`0 0 29 2 *`) are permitted. All 5 fields (`minute`, `hour`, `day of month`, `month`, and `day of week`) are combined with logical **AND**.
 - **UTC evaluation:** All cron fields and slot calculations are evaluated strictly in **UTC** (`getUTCMinutes`, `getUTCHours`, `getUTCDate`, `getUTCMonth`, `getUTCDay`), independent of the host server's local timezone.
-- **Slot-based firing & replica deduplication:** Instead of polling every 60 seconds, the scheduler computes the next matching UTC minute boundary (`nextCronSlot`), arms a single `setTimeout` for that slot, guards against duplicate in-process execution per slot, and enqueues onto `reconciliationQueue` with a deterministic `jobId`:
+- **Slot-based firing, 32-bit timer safety & replica deduplication:** Instead of polling every 60 seconds, the scheduler computes the next matching UTC minute boundary (`nextCronSlot`), arms a `setTimeout` for that slot (clamping individual timer hops to `MAX_TIMEOUT_MS = 2,147,483,647` ms so monthly/yearly schedules never trigger `TimeoutOverflowWarning`), guards against duplicate in-process execution per slot, and enqueues onto `reconciliationQueue` with a deterministic `jobId`:
   `reconciliation:<YYYY-MM-DDTHH:mmZ>` (for example, `reconciliation:2026-10-18T02:00Z`).
   When multiple backend replicas fire on the same slot, BullMQ deduplicates by `jobId` so only one global reconciliation job runs per slot.
 - **Observability:** Next fire time is logged whenever a task is armed, and each slot execution increments the Prometheus counter `scheduler_runs_total{task,outcome}` (`outcome="enqueued" | "deduped" | "error"`).

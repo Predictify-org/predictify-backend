@@ -434,8 +434,14 @@ describe("Scheduler & Cron Parser (Issue #982)", () => {
       add: jest.fn().mockResolvedValue({ id: "reconciliation:2026-10-18T02:00Z" }),
     };
     const slotDate = new Date("2026-10-18T02:00:00.000Z");
+    expect(buildReconciliationJobId(slotDate).split(":")).toHaveLength(3);
     expect(await enqueueReconciliationJob(slotDate, bareQueue)).toBe("enqueued");
     expect(await enqueueReconciliationJob(slotDate, bareQueue)).toBe("deduped");
+
+    // Exercise bounded slot eviction (> 1024 unique slots)
+    for (let i = 0; i < 1030; i++) {
+      await enqueueReconciliationJob(new Date(slotDate.getTime() + (i + 1) * 60_000), bareQueue);
+    }
 
     expect(await sched.runSlotIfNotExecuted("missing-task", slotDate)).toBe(false);
     sched.schedule("string-throw", "* * * * *", async () => {
@@ -444,8 +450,30 @@ describe("Scheduler & Cron Parser (Issue #982)", () => {
     await sched.runSlotIfNotExecuted("string-throw", slotDate);
     sched.stopAll();
 
+    // Monthly schedule > 24.85 days (MAX_TIMEOUT_MS = 2^31 - 1) hops safely without premature firing
+    const monthlyClock = new DeterministicClock("2026-01-01T02:01:00.000Z");
+    const monthlySched = new Scheduler({
+      now: monthlyClock.now,
+      setTimeout: monthlyClock.setTimeout,
+      clearTimeout: monthlyClock.clearTimeout,
+    });
+    const monthlyFired: string[] = [];
+    monthlySched.schedule("monthly", "0 2 1 * *", async (slot) => {
+      monthlyFired.push(slot.toISOString());
+    });
+
+    // At +25 days (after first 24.85d hop), task must NOT have fired yet
+    await monthlyClock.advanceTo("2026-01-26T12:00:00.000Z");
+    expect(monthlyFired).toEqual([]);
+
+    // At 2026-02-01T02:00:00.000Z, task fires once
+    await monthlyClock.advanceTo("2026-02-01T02:00:00.000Z");
+    expect(monthlyFired).toEqual(["2026-02-01T02:00:00.000Z"]);
+    monthlySched.stopAll();
+
     const metricsText = await register.metrics();
     expect(metricsText).toContain("scheduler_runs_total");
   });
 });
+
 

@@ -170,6 +170,24 @@ export function nextCronSlot(cron: ParsedCron | string, fromDate: Date): Date {
 }
 
 /**
+ * Maximum 32-bit signed integer delay supported by Node.js timers (~24.85 days).
+ * Delays exceeding this value are split across intermediate timer hops to prevent
+ * `TimeoutOverflowWarning` (which would otherwise clamp the delay to 1 ms).
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+export const MAX_TRACKED_SLOTS = 1_024;
+
+function addBoundedSlot(set: Set<string>, key: string): void {
+  if (set.size >= MAX_TRACKED_SLOTS) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) {
+      set.delete(oldest);
+    }
+  }
+  set.add(key);
+}
+
+/**
  * Format a Date to its UTC ISO minute string (`YYYY-MM-DDTHH:mmZ`).
  */
 export function formatSlotIsoMinute(date: Date): string {
@@ -178,6 +196,8 @@ export function formatSlotIsoMinute(date: Date): string {
 
 /**
  * Build the deterministic BullMQ jobId for a reconciliation slot (`reconciliation:<slot ISO minute>`).
+ * Uses `YYYY-MM-DDTHH:mmZ` (omitting `:ss`) so the `jobId` contains exactly 3 colon-separated
+ * segments, satisfying BullMQ 5.x custom `jobId` validation rules.
  */
 export function buildReconciliationJobId(slotDate: Date): string {
   return `reconciliation:${formatSlotIsoMinute(slotDate)}`;
@@ -245,7 +265,7 @@ export async function enqueueReconciliationJob(
   const alreadySeen = seenSet.has(jobId);
 
   await queue.add("reconciliation-job", { type: "global" }, { jobId });
-  seenSet.add(jobId);
+  addBoundedSlot(seenSet, jobId);
 
   const wasDeduped = Boolean(existingInQueue) || alreadySeen;
   const outcome: SchedulerTaskOutcome = wasDeduped ? "deduped" : "enqueued";
@@ -331,9 +351,23 @@ export class Scheduler {
       "Task scheduled",
     );
 
+    this.armTimerUntilSlot(entry, nextSlot);
+  }
+
+  private armTimerUntilSlot(entry: ScheduledTaskEntry, targetSlot: Date): void {
+    const remainingMs = Math.max(0, targetSlot.getTime() - this.nowFn().getTime());
+    const waitMs = Math.min(remainingMs, MAX_TIMEOUT_MS);
+
     entry.timer = this.setTimeoutFn(() => {
-      void this.fireSlot(entry, nextSlot);
-    }, delayMs);
+      if (this.tasks.get(entry.name) !== entry) {
+        return;
+      }
+      if (this.nowFn().getTime() < targetSlot.getTime()) {
+        this.armTimerUntilSlot(entry, targetSlot);
+        return;
+      }
+      void this.fireSlot(entry, targetSlot);
+    }, waitMs);
   }
 
   /**
@@ -351,7 +385,7 @@ export class Scheduler {
       log.info({ name: entry.name, slot: slotIso }, "Skipping duplicate in-process slot execution");
       return false;
     }
-    this.executedSlots.add(slotKey);
+    addBoundedSlot(this.executedSlots, slotKey);
 
     try {
       log.info({ name: entry.name, cron: entry.parsedCron.expression, slot: slotIso }, "Running scheduled task");
