@@ -273,3 +273,13 @@ export const predictionsRequestDuration = new Histogram({
   registers: [register],
 });
 
+/**
+ * Total scheduled task executions segmented by task name and outcome
+ * (`enqueued` | `deduped` | `error`).
+ */
+export const schedulerRunsTotal = new Counter({
+  name: "scheduler_runs_total",
+  help: "Total number of scheduled task runs by task name and outcome",
+  labelNames: ["task", "outcome"] as const,
+  registers: [register],
+});

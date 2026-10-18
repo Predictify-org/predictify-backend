@@ -1,4 +1,31 @@
 import { z } from "zod";
+import { parseCron } from "../services/scheduler";
+
+export function envBoolean(defaultValue = false) {
+  return z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((val, ctx): boolean => {
+      if (val === undefined) {
+        return defaultValue;
+      }
+      if (typeof val === "boolean") {
+        return val;
+      }
+      const normalized = val.trim().toLowerCase();
+      if (normalized === "true" || normalized === "1" || normalized === "yes") {
+        return true;
+      }
+      if (normalized === "false" || normalized === "0" || normalized === "no") {
+        return false;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid boolean value "${val}". Expected one of: true, false, 1, 0, yes, no`,
+      });
+      return z.NEVER;
+    });
+}
 
 const baseSchema = z.object({
   // ── Application ───────────────────────────────────────────
@@ -36,8 +63,20 @@ const baseSchema = z.object({
   INDEXER_LAG_ALERT_THRESHOLD: z.coerce.number().int().positive().default(200),
 
   // ── Reconciliation ────────────────────────────────────────
-  RECONCILIATION_ENABLED: z.coerce.boolean().default(false),
-  RECONCILIATION_SCHEDULE: z.string().default("0 2 * * *"),
+  RECONCILIATION_ENABLED: envBoolean(false),
+  RECONCILIATION_SCHEDULE: z
+    .string()
+    .default("0 2 * * *")
+    .superRefine((val, ctx) => {
+      try {
+        parseCron(val);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: err instanceof Error ? err.message : "Invalid RECONCILIATION_SCHEDULE cron expression",
+        });
+      }
+    }),
 
   // ── Administration ────────────────────────────────────────
   ADMIN_ALLOWLIST: z.string().default("").transform((val) => val.split(",").map((s) => s.trim()).filter(Boolean)),
@@ -68,7 +107,7 @@ const baseSchema = z.object({
   // ── Anonymous rate limiting ───────────────────────────────
   ANON_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   ANON_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
-  TRUST_PROXY: z.coerce.boolean().default(false),
+  TRUST_PROXY: envBoolean(false),
 
   // ── Login rate limiting (per-IP, sliding window) ─────────
   LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
@@ -97,7 +136,7 @@ const baseSchema = z.object({
   SETTLE_CONFIRMER_CONFIRMATION_LEDGERS: z.coerce.number().int().positive().default(2),
 
   // ── Slow Query Alerter ────────────────────────────────────
-  SLOW_QUERY_ALERTER_ENABLED: z.coerce.boolean().default(false),
+  SLOW_QUERY_ALERTER_ENABLED: envBoolean(false),
   SLOW_QUERY_ALERTER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SLOW_QUERY_ALERTER_MEAN_EXEC_TIME_THRESHOLD_MS: z.coerce.number().int().positive().default(100),
   SLOW_QUERY_ALERTER_MAX_EXEC_TIME_THRESHOLD_MS: z.coerce.number().int().positive().default(500),
