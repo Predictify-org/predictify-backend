@@ -98,7 +98,20 @@ export const marketWatcherLeaseConflictsTotal = new Counter({
   registers: [register],
 });
 
-export const marketWatcherNotificationsTotal = new Counter({
+export const marketWatcherJobsRecoveredTotal = new Counter({
+  name: "market_watcher_jobs_recovered_total",
+  help: "Market watcher jobs recovered from expired leases or stuck retryable state",
+  registers: [register],
+});
+
+export const marketWatcherLeaseRenewalsTotal = new Counter({
+  name: "market_watcher_lease_renewals_total",
+  help: "Market watcher lease renewal attempts by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
+export const marketWatcherNotificationsTotal =new Counter({
   name: "market_watcher_notifications_total",
   help: "Total number of market watcher notifications generated and dispatched",
   registers: [register],

@@ -131,6 +131,34 @@ await marketResolverWorker.handleEvent({
 });
 ```
 
+### Market watcher (leases, recovery, sweeper)
+
+Notification jobs live in Postgres (`market_watcher_jobs`) and are delivered
+through BullMQ. A worker claims a job with a **lease** (`DEFAULT_LEASE_MS`, 5 min)
+and every state change checks the lease token, so a stale holder can never commit.
+
+- **Renewal.** The handler receives `heartbeat()` and calls it between batches.
+  If renewal fails the handler throws `LeaseLostError`; the coordinator returns
+  `skipped` and nothing is committed.
+- **Conflict retry.** If a claim fails while another lease is live, the job is
+  re-added delayed until `lease_until + 1s` with id `<jobKey>:recover:<attempt>:<leaseUntil>`.
+- **Sweeper** (`src/jobs/marketWatcherLeaseSweeper.ts`). Every
+  `MARKET_WATCHER_SWEEP_INTERVAL_MS` (default 30000) one replica (Redis
+  `SET NX PX` lock) calls `recoverExpiredLeases`, which moves expired `running`
+  jobs to `retryable` (or `failed` once `DEFAULT_MAX_ATTEMPTS` is reached), then
+  re-enqueues due `retryable` jobs with no live BullMQ job under id
+  `<jobKey>:recover:<attempt>`, since the original deterministic id is blocked.
+- **Metrics.** `market_watcher_jobs_recovered_total`,
+  `market_watcher_lease_renewals_total{outcome=renewed|lost}`; each recovery is
+  logged with its `jobKey`.
+
+Run (worker plus sweeper, drains on SIGTERM/SIGINT):
+
+```bash
+npm run market-watcher:dev   # ts-node-dev
+npm run build && npm run market-watcher
+```
+
 ## Startup & shutdown — `src/index.ts`
 
 Workers are started after the database connection is established and stopped
