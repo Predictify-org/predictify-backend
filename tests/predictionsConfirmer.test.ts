@@ -65,6 +65,31 @@ function makeRepo(
   };
 }
 
+// ─── Late-confirmation scoring ────────────────────────────────────────────
+
+describe("DrizzlePredictionsConfirmerRepo.confirmBatch — late scoring", () => {
+  it("sets result in the same UPDATE from markets.winning_outcome without overwriting", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { PgDialect } = require("drizzle-orm/pg-core");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DrizzlePredictionsConfirmerRepo } = require("../src/workers/predictionsConfirmer");
+    const captured: { sql?: string } = {};
+    const chain: Record<string, unknown> = {};
+    chain.update = () => chain;
+    chain.set = (v: { result: unknown }) => {
+      captured.sql = new PgDialect().sqlToQuery(v.result).sql;
+      return chain;
+    };
+    chain.where = () => chain;
+    chain.returning = async () => [];
+    const repo = new DrizzlePredictionsConfirmerRepo(chain);
+    await repo.confirmBatch(["id-1"]);
+    expect(captured.sql).toMatch(/COALESCE/);
+    expect(captured.sql).toMatch(/winning_outcome/);
+    expect(captured.sql).toMatch(/'resolved'/);
+  });
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function makeService(
