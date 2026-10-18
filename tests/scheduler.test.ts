@@ -10,6 +10,7 @@ import {
   initializeScheduler,
   stopScheduler,
   scheduler,
+  MAX_TIMEOUT_MS,
   type ReconciliationQueueLike,
 } from "../src/services/scheduler";
 
@@ -24,6 +25,7 @@ class DeterministicClock {
   private currentMs: number;
   private nextTimerId = 1;
   private readonly timers = new Map<number, PendingTimer>();
+  readonly recordedDelays: number[] = [];
 
   constructor(initialIso: string) {
     this.currentMs = Date.parse(initialIso);
@@ -35,8 +37,10 @@ class DeterministicClock {
     callback: () => void,
     delayMs: number,
   ): ReturnType<typeof globalThis.setTimeout> => {
+    this.recordedDelays.push(delayMs);
     const id = this.nextTimerId++;
-    const safeDelay = Math.max(0, delayMs);
+    // Match Node.js 32-bit signed int timer behavior: delays > 2^31 - 1 overflow to 1 ms
+    const safeDelay = delayMs > 2_147_483_647 ? 1 : Math.max(0, delayMs);
     this.timers.set(id, {
       id,
       runAtMs: this.currentMs + safeDelay,
@@ -461,6 +465,7 @@ describe("Scheduler & Cron Parser (Issue #982)", () => {
     monthlySched.schedule("monthly", "0 2 1 * *", async (slot) => {
       monthlyFired.push(slot.toISOString());
     });
+    expect(monthlyClock.recordedDelays[0]).toBe(MAX_TIMEOUT_MS);
 
     // At +25 days (after first 24.85d hop), task must NOT have fired yet
     await monthlyClock.advanceTo("2026-01-26T12:00:00.000Z");
@@ -469,6 +474,7 @@ describe("Scheduler & Cron Parser (Issue #982)", () => {
     // At 2026-02-01T02:00:00.000Z, task fires once
     await monthlyClock.advanceTo("2026-02-01T02:00:00.000Z");
     expect(monthlyFired).toEqual(["2026-02-01T02:00:00.000Z"]);
+    expect(Math.max(...monthlyClock.recordedDelays)).toBeLessThanOrEqual(MAX_TIMEOUT_MS);
     monthlySched.stopAll();
 
     const metricsText = await register.metrics();
