@@ -74,6 +74,37 @@ describe("envSchema", () => {
     const result = envSchema.safeParse({ ...VALID_ENV, DATABASE_URL: "not-a-url" });
     expect(result.success).toBe(false);
   });
+
+  it("rejects invalid RECONCILIATION_SCHEDULE expressions", () => {
+    for (const bad of ["61 * * * *", "* * *", "*/0 * * * *"]) {
+      const result = envSchema.safeParse({
+        ...VALID_ENV,
+        RECONCILIATION_SCHEDULE: bad,
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it("coerces boolean flags strictly and rejects invalid boolean strings", () => {
+    const valid = envSchema.safeParse({
+      ...VALID_ENV,
+      RECONCILIATION_ENABLED: "false",
+      TRUST_PROXY: "yes",
+      SLOW_QUERY_ALERTER_ENABLED: "0",
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) {
+      expect(valid.data.RECONCILIATION_ENABLED).toBe(false);
+      expect(valid.data.TRUST_PROXY).toBe(true);
+      expect(valid.data.SLOW_QUERY_ALERTER_ENABLED).toBe(false);
+    }
+
+    const invalid = envSchema.safeParse({
+      ...VALID_ENV,
+      TRUST_PROXY: "maybe",
+    });
+    expect(invalid.success).toBe(false);
+  });
 });
 
 describe("formatEnvErrors", () => {

@@ -131,10 +131,38 @@ await marketResolverWorker.handleEvent({
 });
 ```
 
+### Market watcher (leases, recovery, sweeper)
+
+Notification jobs live in Postgres (`market_watcher_jobs`) and are delivered
+through BullMQ. A worker claims a job with a **lease** (`DEFAULT_LEASE_MS`, 5 min)
+and every state change checks the lease token, so a stale holder can never commit.
+
+- **Renewal.** The handler receives `heartbeat()` and calls it between batches.
+  If renewal fails the handler throws `LeaseLostError`; the coordinator returns
+  `skipped` and nothing is committed.
+- **Conflict retry.** If a claim fails while another lease is live, the job is
+  re-added delayed until `lease_until + 1s` with id `<jobKey>:recover:<attempt>:<leaseUntil>`.
+- **Sweeper** (`src/jobs/marketWatcherLeaseSweeper.ts`). Every
+  `MARKET_WATCHER_SWEEP_INTERVAL_MS` (default 30000) one replica (Redis
+  `SET NX PX` lock) calls `recoverExpiredLeases`, which moves expired `running`
+  jobs to `retryable` (or `failed` once `DEFAULT_MAX_ATTEMPTS` is reached), then
+  re-enqueues due `retryable` jobs with no live BullMQ job under id
+  `<jobKey>:recover:<attempt>`, since the original deterministic id is blocked.
+- **Metrics.** `market_watcher_jobs_recovered_total`,
+  `market_watcher_lease_renewals_total{outcome=renewed|lost}`; each recovery is
+  logged with its `jobKey`.
+
+Run (worker plus sweeper, drains on SIGTERM/SIGINT):
+
+```bash
+npm run market-watcher:dev   # ts-node-dev
+npm run build && npm run market-watcher
+```
+
 ## Startup & shutdown — `src/index.ts`
 
-Workers are started after the database connection is established and stopped
-gracefully on `SIGTERM` / `SIGINT`:
+Workers and the reconciliation scheduler are started after the database
+connection is established and stopped gracefully on `SIGTERM` / `SIGINT`:
 
 ```ts
 connectWithRetry().then(() => {
@@ -142,10 +170,12 @@ connectWithRetry().then(() => {
   marketResolverWorker.start();
   backupVerificationWorker.start();
   reconciliationWorker.start();
+  initializeScheduler();
   app.listen(…);
 });
 
 process.on("SIGTERM", async () => {
+  stopScheduler();
   await Promise.all([
     webhookWorker.stop(),
     marketResolverWorker.stop(),
@@ -156,11 +186,48 @@ process.on("SIGTERM", async () => {
 });
 ```
 
+## Reconciliation Scheduler — `src/services/scheduler.ts`
+
+When `RECONCILIATION_ENABLED` is `true` (`true`/`1`/`yes`, case-insensitive),
+`initializeScheduler()` schedules periodic global reconciliation jobs on
+`reconciliationQueue` according to `RECONCILIATION_SCHEDULE` (default:
+`0 2 * * *`).
+
+### Supported 5-field cron syntax & UTC semantics
+
+`RECONCILIATION_SCHEDULE` is validated at boot (`src/config/env-schema.ts`) and
+when `scheduler.schedule()` is called using a dependency-free 5-field parser:
+
+```text
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of week (0 - 6, where 0 = Sunday)
+│ │ │ │ │
+* * * * *
+```
+
+- **Operators supported per field:**
+  - Wildcard: `*`
+  - Exact integer: `n` (e.g. `0`, `15`)
+  - Inclusive range: `a-b` (e.g. `1-5`)
+  - Step on wildcard or range: `*/n` or `a-b/n` (e.g. `*/15`, `8-18/2`)
+  - Comma-separated list: `a,b,c` combining any of the above (e.g. `0,30`, `1-5,10`)
+- **Calendar validation & field matching:** Impossible day/month combinations (such as `0 0 30 2 *` or `0 0 31 4 *`) are rejected at parse time; leap-day schedules (`0 0 29 2 *`) are permitted. All 5 fields (`minute`, `hour`, `day of month`, `month`, and `day of week`) are combined with logical **AND**.
+- **UTC evaluation:** All cron fields and slot calculations are evaluated strictly in **UTC** (`getUTCMinutes`, `getUTCHours`, `getUTCDate`, `getUTCMonth`, `getUTCDay`), independent of the host server's local timezone.
+- **Slot-based firing, 32-bit timer safety & replica deduplication:** Instead of polling every 60 seconds, the scheduler computes the next matching UTC minute boundary (`nextCronSlot`), arms a `setTimeout` for that slot (clamping individual timer hops to `MAX_TIMEOUT_MS = 2,147,483,647` ms so monthly/yearly schedules never trigger `TimeoutOverflowWarning`), guards against duplicate in-process execution per slot, and enqueues onto `reconciliationQueue` with a deterministic `jobId`:
+  `reconciliation:<YYYY-MM-DDTHH:mmZ>` (for example, `reconciliation:2026-10-18T02:00Z`).
+  When multiple backend replicas fire on the same slot, BullMQ deduplicates by `jobId` so only one global reconciliation job runs per slot.
+- **Observability:** Next fire time is logged whenever a task is armed, and each slot execution increments the Prometheus counter `scheduler_runs_total{task,outcome}` (`outcome="enqueued" | "deduped" | "error"`).
+
 ## Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `REDIS_URL` | ✅ | `redis://…` connection string used by BullMQ |
+| `RECONCILIATION_ENABLED` | Optional (`false`) | Strict boolean (`true`/`false`/`1`/`0`/`yes`/`no`, case-insensitive) enabling scheduled global reconciliation |
+| `RECONCILIATION_SCHEDULE` | Optional (`0 2 * * *`) | 5-field UTC cron schedule for global reconciliation |
 
 Add `REDIS_URL=redis://localhost:6379` to your `.env` (already in
 `.env.example`).

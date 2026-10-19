@@ -327,6 +327,18 @@ describe("prepareClaim", () => {
         await expectClaimError(prepared(c.deps), 409, "claim_already_submitted");
     });
 
+    it("2c: only confirmed predictions are claimable (ambiguous / unconfirmed)", async () => {
+        const a = setup();
+        a.repo.context = { ...a.repo.context, prediction: null, ambiguous: true };
+        await expectClaimError(prepared(a.deps), 409, "ambiguous_prediction");
+        expect(a.repo.rows).toHaveLength(0);
+
+        const b = setup();
+        b.repo.context = { ...b.repo.context, prediction: null, unconfirmedOnly: true };
+        await expectClaimError(prepared(b.deps), 400, "prediction_not_winning");
+        expect(b.repo.rows).toHaveLength(0);
+    });
+
     it("7a: maps a simulation error to a stable code without leaking SDK text", async () => {
         const { rpc, repo, deps } = setup();
         rpc.simulateError = "HostError: secret internal detail";

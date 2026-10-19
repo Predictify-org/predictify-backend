@@ -377,7 +377,9 @@ export const indexerEvents = pgTable("indexer_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   ledger: integer("ledger").notNull(),
   txHash: text("tx_hash").notNull(),
+  txApplicationOrder: integer("tx_application_order").notNull().default(0),
   opIndex: integer("op_index").notNull().default(0),
+  eventIndex: integer("event_index").notNull().default(0),
   eventType: text("event_type").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -392,9 +394,12 @@ export type IndexerEvent = typeof indexerEvents.$inferSelect;
 export const indexerReorgs = pgTable("indexer_reorgs", {
   id: uuid("id").primaryKey().defaultRandom(),
   ledger: integer("ledger").notNull(),
+  txApplicationOrder: integer("tx_application_order").notNull().default(0),
   opIndex: integer("op_index").notNull(),
+  eventIndex: integer("event_index").notNull().default(0),
   oldTxHash: text("old_tx_hash").notNull(),
   newTxHash: text("new_tx_hash").notNull(),
+  repairedPredictions: integer("repaired_predictions").notNull().default(0),
   status: text("status").notNull().default("detected"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

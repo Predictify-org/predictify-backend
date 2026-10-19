@@ -11,6 +11,7 @@ export type ClaimErrorCode =
     | "market_not_resolved"
     | "prediction_not_found"
     | "prediction_not_winning"
+    | "ambiguous_prediction"
     | "claim_not_found"
     | "claim_already_submitted"
     | "claim_in_progress"

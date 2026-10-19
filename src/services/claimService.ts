@@ -77,6 +77,7 @@ export interface ClaimRecord {
 
 export interface ClaimContext {
     market: { status: string } | null;
+    /** The user's single confirmed prediction for the market, if exactly one exists. */
     prediction: {
         id: string;
         result: string | null;
@@ -84,6 +85,10 @@ export interface ClaimContext {
         claimTxHash: string | null;
         claimedAt: Date | null;
     } | null;
+    /** More than one confirmed prediction exists for this user and market. */
+    ambiguous?: boolean;
+    /** Predictions exist but none is confirmed (pending / failed). */
+    unconfirmedOnly?: boolean;
 }
 
 export interface NewPreparedClaim {
@@ -225,7 +230,10 @@ export async function prepareClaim(
     const { repo, chain, nonceSource, now = () => new Date() } = deps ?? (await getDefaultDeps());
     const { marketId, userId, stellarAddress } = input;
 
-    const { market, prediction } = await repo.loadContext(marketId, userId);
+    const { market, prediction, ambiguous, unconfirmedOnly } = await repo.loadContext(
+        marketId,
+        userId,
+    );
     if (!market) throw new ClaimError(404, "market_not_found", "Market not found");
     if (market.status !== "resolved") {
         throw new ClaimError(
@@ -234,7 +242,21 @@ export async function prepareClaim(
             "Market must be resolved before claims can be processed",
         );
     }
+    if (ambiguous) {
+        throw new ClaimError(
+            409,
+            "ambiguous_prediction",
+            "Multiple confirmed predictions found for this user and market",
+        );
+    }
     if (!prediction) {
+        if (unconfirmedOnly) {
+            throw new ClaimError(
+                400,
+                "prediction_not_winning",
+                "No confirmed winning prediction found. Only confirmed winning predictions can be claimed",
+            );
+        }
         throw new ClaimError(
             404,
             "prediction_not_found",

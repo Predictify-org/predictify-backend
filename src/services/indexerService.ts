@@ -2,7 +2,19 @@ import { rpc } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { getPool } from "../db/client";
-import { dedupeEvents, type RecoveryEvent } from "./indexerRecovery";
+import {
+  decodeEventId,
+  dedupeEvents,
+  formatEventId,
+  type DecodedEventIdentity,
+  type RecoveryEvent,
+} from "./indexerRecovery";
+import {
+  indexerEventsInsertedTotal,
+  indexerReorgsDetectedTotal,
+} from "../metrics/registry";
+
+export { decodeEventId, formatEventId, type DecodedEventIdentity };
 
 export const INDEXER_CURSOR_ID = 1;
 
@@ -12,10 +24,14 @@ export interface LedgerGap {
 }
 
 export interface IndexerEventInput {
+  id?: string;
   ledger: number;
   txHash: string;
+  txApplicationOrder?: number;
   opIndex: number;
+  eventIndex?: number;
   eventType?: string;
+  marketId?: string | null;
   payload?: unknown;
 }
 
@@ -31,10 +47,20 @@ export interface SorobanRpcClient {
 }
 
 export function parseEventOpIndex(eventId: string, fallback: number): number {
-  const parts = eventId.split("-");
-  const last = parts[parts.length - 1];
-  const parsed = Number.parseInt(last ?? "", 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  const decoded = decodeEventId(eventId);
+  return decoded ? decoded.opIndex : fallback;
+}
+
+export function extractMarketId(event: IndexerEventInput): string | null {
+  if (event.marketId) {
+    return event.marketId;
+  }
+  if (event.payload && typeof event.payload === "object") {
+    const p = event.payload as Record<string, unknown>;
+    if (typeof p.marketId === "string") return p.marketId;
+    if (typeof p.market_id === "string") return p.market_id;
+  }
+  return null;
 }
 
 export function createSorobanRpcClient(): SorobanRpcClient {
@@ -49,7 +75,6 @@ export function createSorobanRpcClient(): SorobanRpcClient {
     async getEvents(startLedger: number, endLedger: number): Promise<IndexerEventInput[]> {
       const collected: IndexerEventInput[] = [];
       let cursor: string | undefined;
-      let fallbackIndex = 0;
 
       while (true) {
         const response = await server.getEvents({
@@ -73,15 +98,25 @@ export function createSorobanRpcClient(): SorobanRpcClient {
             return collected;
           }
           if (event.ledger >= startLedger) {
+            const decoded = decodeEventId(event.id);
+            if (!decoded) {
+              logger.warn(
+                { eventId: event.id, txHash: event.txHash, ledger: event.ledger },
+                "indexer skipping event with malformed event id",
+              );
+              continue;
+            }
             collected.push({
+              id: event.id,
               ledger: event.ledger,
               txHash: event.txHash,
-              opIndex: parseEventOpIndex(event.id, fallbackIndex),
+              txApplicationOrder: decoded.txApplicationOrder,
+              opIndex: decoded.opIndex,
+              eventIndex: decoded.eventIndex,
               eventType: event.type,
               payload: event.value,
             });
           }
-          fallbackIndex += 1;
         }
 
         const lastEvent = response.events[response.events.length - 1];
@@ -234,8 +269,45 @@ export class IndexerService {
    * a different transaction at the same ledger/op position replaces the old
    * canonical event and resets prediction state tied to the stale transaction.
    */
+  /**
+   * Persist an at-least-once RPC batch. Exact duplicates are ignored, while
+   * a different transaction at the same ledger position (ledger, txApplicationOrder, opIndex, eventIndex)
+   * replaces the old canonical event and resets prediction state tied to the stale transaction atomically.
+   */
   async persistEventsWithRecovery(events: IndexerEventInput[]): Promise<ReorgRecoveryReport> {
     if (events.length === 0) {
+      return { inserted: 0, replacements: 0, repairedPredictions: 0 };
+    }
+
+    const validEvents: IndexerEventInput[] = [];
+    for (const raw of events) {
+      if (raw.id) {
+        const decoded = decodeEventId(raw.id);
+        if (!decoded) {
+          logger.warn(
+            { eventId: raw.id, txHash: raw.txHash, ledger: raw.ledger },
+            "indexer rejecting event with malformed event id",
+          );
+          continue;
+        }
+        validEvents.push({
+          ...raw,
+          ledger: raw.ledger ?? decoded.ledger,
+          txApplicationOrder: raw.txApplicationOrder ?? decoded.txApplicationOrder,
+          opIndex: raw.opIndex ?? decoded.opIndex,
+          eventIndex: raw.eventIndex ?? decoded.eventIndex,
+        });
+      } else {
+        validEvents.push({
+          ...raw,
+          txApplicationOrder: raw.txApplicationOrder ?? 0,
+          opIndex: raw.opIndex ?? 0,
+          eventIndex: raw.eventIndex ?? 0,
+        });
+      }
+    }
+
+    if (validEvents.length === 0) {
       return { inserted: 0, replacements: 0, repairedPredictions: 0 };
     }
 
@@ -243,50 +315,117 @@ export class IndexerService {
     let inserted = 0;
     let replacements = 0;
     let repairedPredictions = 0;
-    const uniqueEvents = dedupeEvents(events as RecoveryEvent[]);
+    const uniqueEvents = dedupeEvents(validEvents as RecoveryEvent[]) as IndexerEventInput[];
 
     for (const event of uniqueEvents) {
-      const existing = await pool.query<{ tx_hash: string }>(
-        `SELECT tx_hash FROM indexer_events
-         WHERE ledger = $1 AND op_index = $2 AND canonical = TRUE
-         AND tx_hash <> $3 LIMIT 1`,
-        [event.ledger, event.opIndex, event.txHash],
-      );
-      if ((existing.rows ?? []).length > 0) {
-        const oldTxHash = existing.rows[0].tx_hash;
-        await pool.query(
-          `UPDATE indexer_events SET canonical = FALSE
-           WHERE ledger = $1 AND op_index = $2 AND tx_hash = $3`,
-          [event.ledger, event.opIndex, oldTxHash],
+      const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+      try {
+        await client.query("BEGIN");
+
+        const txAppOrder = event.txApplicationOrder ?? 0;
+        const opIndex = event.opIndex ?? 0;
+        const eventIndex = event.eventIndex ?? 0;
+
+        // Detect canonical conflict at the same ledger position using SELECT ... FOR UPDATE
+        const existing = await client.query<{ id: string; tx_hash: string }>(
+          `SELECT id, tx_hash FROM indexer_events
+           WHERE ledger = $1 AND tx_application_order = $2 AND op_index = $3 AND event_index = $4 AND canonical = TRUE
+           FOR UPDATE`,
+          [event.ledger, txAppOrder, opIndex, eventIndex],
         );
-        await pool.query(
-          `INSERT INTO indexer_reorgs (ledger, op_index, old_tx_hash, new_tx_hash)
-           VALUES ($1, $2, $3, $4)`,
-          [event.ledger, event.opIndex, oldTxHash, event.txHash],
+
+        const existingRows = existing?.rows ?? [];
+        if (existingRows.length > 0) {
+          const oldRow = existingRows[0];
+          if (oldRow.tx_hash !== event.txHash) {
+            // Reorg replacement: same position, different tx hash
+            await client.query(
+              `UPDATE indexer_events SET canonical = FALSE
+               WHERE id = $1`,
+              [oldRow.id],
+            );
+
+            const repaired = await client.query(
+              `UPDATE predictions SET status = 'pending', result = NULL, last_error = NULL,
+                 confirm_attempts = 0
+               WHERE tx_hash = $1 AND status IN ('confirmed', 'failed')`,
+              [oldRow.tx_hash],
+            );
+            const repairedCount = repaired.rowCount ?? 0;
+
+            await client.query(
+              `INSERT INTO indexer_reorgs (
+                 ledger, tx_application_order, op_index, event_index, old_tx_hash, new_tx_hash, repaired_predictions, status
+               )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 'detected')`,
+              [
+                event.ledger,
+                txAppOrder,
+                opIndex,
+                eventIndex,
+                oldRow.tx_hash,
+                event.txHash,
+                repairedCount,
+              ],
+            );
+
+            logger.warn(
+              {
+                ledger: event.ledger,
+                txApplicationOrder: txAppOrder,
+                opIndex,
+                eventIndex,
+                oldTxHash: oldRow.tx_hash,
+                newTxHash: event.txHash,
+                repairedPredictions: repairedCount,
+              },
+              "indexer reorg detected and predictions repaired",
+            );
+
+            indexerReorgsDetectedTotal.inc();
+            replacements += 1;
+            repairedPredictions += repairedCount;
+          }
+        }
+
+        const marketId = extractMarketId(event);
+        const payloadJson = event.payload === undefined ? null : JSON.stringify(event.payload);
+
+        const result = await client.query(
+          `INSERT INTO indexer_events (
+             ledger, tx_hash, tx_application_order, op_index, event_index, event_type, market_id, data, canonical
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+           ON CONFLICT (ledger, tx_hash, op_index, event_index) DO NOTHING
+           RETURNING id`,
+          [
+            event.ledger,
+            event.txHash,
+            txAppOrder,
+            opIndex,
+            eventIndex,
+            event.eventType ?? "unknown",
+            marketId,
+            payloadJson,
+            true,
+          ],
         );
-        const repaired = await pool.query(
-          `UPDATE predictions SET status = 'pending', result = NULL, last_error = NULL,
-             confirm_attempts = 0
-           WHERE tx_hash = $1 AND status IN ('confirmed', 'failed')`,
-          [oldTxHash],
-        );
-        replacements += 1;
-        repairedPredictions += repaired.rowCount ?? 0;
+
+        await client.query("COMMIT");
+
+        const rowCount = result.rowCount ?? 0;
+        inserted += rowCount;
+        if (rowCount > 0) {
+          indexerEventsInsertedTotal.inc(rowCount);
+        }
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        if ("release" in client && typeof client.release === "function") {
+          client.release();
+        }
       }
-      const result = await pool.query(
-        `INSERT INTO indexer_events (ledger, tx_hash, op_index, event_type, data, canonical)
-         VALUES ($1, $2, $3, $4, $5::jsonb)
-         ON CONFLICT (ledger, tx_hash, op_index) DO NOTHING
-         RETURNING id`,
-        [
-          event.ledger,
-          event.txHash,
-          event.opIndex,
-          event.eventType ?? "unknown",
-          event.payload === undefined ? null : JSON.stringify(event.payload),
-        ],
-      );
-      inserted += result.rowCount ?? 0;
     }
 
     return { inserted, replacements, repairedPredictions };

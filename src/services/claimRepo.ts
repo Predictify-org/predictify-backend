@@ -47,7 +47,9 @@ export class DrizzleClaimRepo implements ClaimRepo {
             .from(markets)
             .where(eq(markets.id, marketId))
             .limit(1);
-        const [prediction] = await db
+        // Only confirmed rows are claimable. Fetch up to two so duplicates are
+        // detected deterministically instead of guessing with an unordered limit(1).
+        const confirmed = await db
             .select({
                 id: predictions.id,
                 result: predictions.result,
@@ -56,9 +58,28 @@ export class DrizzleClaimRepo implements ClaimRepo {
                 claimedAt: predictions.claimedAt,
             })
             .from(predictions)
-            .where(and(eq(predictions.marketId, marketId), eq(predictions.userId, userId)))
-            .limit(1);
-        return { market: market ?? null, prediction: prediction ?? null };
+            .where(
+                and(
+                    eq(predictions.marketId, marketId),
+                    eq(predictions.userId, userId),
+                    eq(predictions.status, "confirmed"),
+                ),
+            )
+            .orderBy(predictions.id)
+            .limit(2);
+        if (confirmed.length > 1) {
+            return { market: market ?? null, prediction: null, ambiguous: true };
+        }
+        if (confirmed.length === 0) {
+            const [any] = await db
+                .select({ id: predictions.id })
+                .from(predictions)
+                .where(and(eq(predictions.marketId, marketId), eq(predictions.userId, userId)))
+                .orderBy(predictions.id)
+                .limit(1);
+            return { market: market ?? null, prediction: null, unconfirmedOnly: Boolean(any) };
+        }
+        return { market: market ?? null, prediction: confirmed[0] };
     }
 
     async findActiveClaim(userId: string, marketId: string): Promise<ClaimRecord | null> {

@@ -37,7 +37,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { pool } from "../db/client";
-import { predictions, indexerEvents } from "../db/schema";
+import { predictions, indexerEvents, markets } from "../db/schema";
 import type { Db } from "../db";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -306,6 +306,19 @@ export class DrizzlePredictionsConfirmerRepo implements PredictionsConfirmerRepo
         status: "confirmed",
         confirmAttempts: 0,
         lastError: null,
+        // Late confirmation: if the market is already resolved, score the row
+        // in this same UPDATE from markets.winning_outcome. An existing
+        // won/lost value is never overwritten (idempotent).
+        result: sql<string | null>`COALESCE(
+          ${predictions.result},
+          (SELECT CASE
+             WHEN ${markets.status} = 'resolved' AND ${markets.winningOutcome} IS NOT NULL
+               THEN CASE WHEN ${markets.winningOutcome} = ${predictions.outcome} THEN 'won' ELSE 'lost' END
+             ELSE NULL
+           END
+           FROM ${markets}
+           WHERE ${markets.id} = ${predictions.marketId})
+        )`,
       })
       .where(inArray(predictions.id, predictionIds))
       .returning({

@@ -1421,6 +1421,7 @@ const ClaimErrorBody = z
         "market_not_resolved",
         "prediction_not_found",
         "prediction_not_winning",
+        "ambiguous_prediction",
         "claim_not_found",
         "claim_already_submitted",
         "claim_in_progress",
@@ -1450,7 +1451,7 @@ registry.registerPath({
     "claim_winnings(user, market_id, claim_nonce) transaction with the caller as source. The " +
     "server never signs. Calling it again while a claim is outstanding returns that same claim. " +
     "Error codes: market_not_found, market_not_resolved, prediction_not_found, " +
-    "prediction_not_winning, claim_already_submitted, claim_in_progress, " +
+    "prediction_not_winning, ambiguous_prediction, claim_already_submitted, claim_in_progress, " +
     "claim_nonce_unavailable, claim_simulation_failed.",
   security: [{ bearerAuth: [] }],
   request: {
@@ -1471,7 +1472,8 @@ registry.registerPath({
       content: { "application/json": { schema: ClaimErrorBody } },
     },
     409: {
-      description: "Already claimed, claim in progress, or claim_nonce_unavailable",
+      description:
+        "ambiguous_prediction, already claimed, claim in progress, or claim_nonce_unavailable",
       content: { "application/json": { schema: ClaimErrorBody } },
     },
     422: {

@@ -1,5 +1,21 @@
 # Predictions Listing API
 
+## When is a prediction claimable
+
+A prediction is claimable only when **all** of the following hold:
+
+1. Its `status` is `confirmed` (the confirmer matched it to an on-chain `bet_placed` event).
+2. Its market is `resolved`.
+3. Its `result` is `won`.
+
+Details:
+
+- At resolution only `confirmed` rows are scored `won`/`lost`. `pending` and `failed` rows keep `result = NULL`.
+- A prediction confirmed after its market resolved is scored in the same `UPDATE` that confirms it, from `markets.winning_outcome`.
+- Existing `won`/`lost` values are never overwritten by replayed resolution or confirmation.
+- `POST /api/predictions/claim/prepare` looks at confirmed rows only. If none is a winner it returns `400 prediction_not_winning`; if the user has more than one confirmed row for the market it returns `409 ambiguous_prediction` (both ids are logged) rather than guessing.
+- Legacy rows scored before this rule can be cleaned with `scripts/repair-unconfirmed-results.ts` (dry run by default; `--apply` to write; already-claimed rows are reported, not changed).
+
 ## `GET /api/predictions`
 
 Returns a cursor-paginated list of predictions belonging to the **authenticated user**.

@@ -75,11 +75,11 @@ export async function fetchWithRetry(
       }
 
       return response;
-    } catch (err: any) {
+    } catch (err: unknown) {
       lastError = err;
       
       // Do not retry on explicit aborts from the caller's own signal
-      if (err.name === 'AbortError' && init?.signal?.aborted) {
+      if ((err as { name?: string }).name === 'AbortError' && init?.signal?.aborted) {
         throw err;
       }
 

@@ -202,6 +202,7 @@ interface MemPrediction {
   marketId: string;
   outcome: string;
   result: string | null;
+  status?: string;
 }
 
 class InMemoryMarketResolutionRepo implements MarketResolutionRepo {
@@ -217,7 +218,7 @@ class InMemoryMarketResolutionRepo implements MarketResolutionRepo {
     market.winningOutcome = winningOutcome;
 
     for (const p of this.predictions) {
-      if (p.marketId === marketId) {
+      if (p.marketId === marketId && (p.status ?? "confirmed") === "confirmed" && p.result === null) {
         p.result = p.outcome === winningOutcome ? "won" : "lost";
       }
     }
@@ -247,6 +248,32 @@ const FIXTURE_RESOLVE: MarketResolvedEvent = {
   ledger: 42_000,
   timestamp: 1_700_000_000,
 };
+
+describe("resolveMarket() — only confirmed predictions are scored", () => {
+  it("leaves pending and failed rows with NULL result", async () => {
+    const repo = new InMemoryMarketResolutionRepo();
+    repo.markets.push({ id: "mkt-1", status: "active", winningOutcome: null });
+    repo.predictions.push(
+      { id: "c", marketId: "mkt-1", outcome: "YES", result: null, status: "confirmed" },
+      { id: "p", marketId: "mkt-1", outcome: "YES", result: null, status: "pending" },
+      { id: "f", marketId: "mkt-1", outcome: "YES", result: null, status: "failed" },
+    );
+    await resolveMarket(repo, FIXTURE_RESOLVE, makeEmitter());
+    const byId = Object.fromEntries(repo.predictions.map((p) => [p.id, p.result]));
+    expect(byId).toEqual({ c: "won", p: null, f: null });
+  });
+
+  it("replay does not change existing results", async () => {
+    const repo = new InMemoryMarketResolutionRepo();
+    repo.markets.push({ id: "mkt-1", status: "active", winningOutcome: null });
+    repo.predictions.push(
+      { id: "c", marketId: "mkt-1", outcome: "NO", result: null, status: "confirmed" },
+    );
+    await resolveMarket(repo, FIXTURE_RESOLVE, makeEmitter());
+    await resolveMarket(repo, { ...FIXTURE_RESOLVE, winningOutcome: "NO" }, makeEmitter());
+    expect(repo.predictions[0].result).toBe("lost");
+  });
+});
 
 describe("resolveMarket() — in-memory fixture tests (end-to-end logic)", () => {
   it("marks the market as resolved with the correct winning outcome", async () => {
