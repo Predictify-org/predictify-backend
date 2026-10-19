@@ -52,6 +52,20 @@ export const indexerPollsTotal = new Counter({
   registers: [register],
 });
 
+export const indexerEventsDecodedTotal = new Counter({
+  name: "indexer_events_decoded_total",
+  help: "Contract events decoded by the indexer, by topic symbol (unknown topics are grouped as 'unknown')",
+  labelNames: ["event_type"] as const,
+  registers: [register],
+});
+
+export const indexerEventsInvalidTotal = new Counter({
+  name: "indexer_events_invalid_total",
+  help: "Contract events whose topic layout or payload failed validation, by topic symbol",
+  labelNames: ["event_type"] as const,
+  registers: [register],
+});
+
 export const indexerLagLedgers = new Gauge({
   name: "indexer_lag_ledgers",
   help: "Current lag in ledgers between the indexer cursor and the chain tip",

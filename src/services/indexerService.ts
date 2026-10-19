@@ -1,8 +1,10 @@
-import { rpc } from "@stellar/stellar-sdk";
+import { rpc, type xdr } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { getPool } from "../db/client";
 import { dedupeEvents, type RecoveryEvent } from "./indexerRecovery";
+import { decodePredictifyEvent, eventDataOf } from "../indexer/eventDecoder";
+import { indexerEventsDecodedTotal, indexerEventsInvalidTotal } from "../metrics/registry";
 
 export const INDEXER_CURSOR_ID = 1;
 
@@ -16,6 +18,8 @@ export interface IndexerEventInput {
   txHash: string;
   opIndex: number;
   eventType?: string;
+  /** Market the event is scoped to (set for decoded market-scoped events). */
+  marketId?: string | null;
   payload?: unknown;
 }
 
@@ -35,6 +39,57 @@ export function parseEventOpIndex(eventId: string, fallback: number): number {
   const last = parts[parts.length - 1];
   const parsed = Number.parseInt(last ?? "", 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** The subset of an RPC `EventResponse` that mapRpcEvent reads. */
+export interface RpcEventLike {
+  id: string;
+  type: string;
+  ledger: number;
+  txHash: string;
+  contractId?: { contractId(): string } | null;
+  topic: ReadonlyArray<xdr.ScVal>;
+  value: xdr.ScVal;
+}
+
+/**
+ * Turn one RPC event into an indexer row, or null when it must not be
+ * persisted (not a `contract` event, or emitted by another contract).
+ * Unknown and invalid topics are kept with their raw XDR; nothing throws.
+ */
+export function mapRpcEvent(
+  event: RpcEventLike,
+  contractId: string,
+  fallbackIndex: number,
+): IndexerEventInput | null {
+  if (event.type !== "contract") {
+    return null;
+  }
+  if (event.contractId && event.contractId.contractId() !== contractId) {
+    return null;
+  }
+
+  const decoded = decodePredictifyEvent({ topic: event.topic, value: event.value });
+  if (decoded.status === "decoded") {
+    indexerEventsDecodedTotal.inc({ event_type: decoded.eventType });
+  } else if (decoded.status === "unknown") {
+    indexerEventsDecodedTotal.inc({ event_type: "unknown" });
+  } else {
+    indexerEventsInvalidTotal.inc({ event_type: decoded.eventType.slice("invalid:".length) });
+    logger.warn(
+      { txHash: event.txHash, ledger: event.ledger, eventType: decoded.eventType, errors: decoded.errors },
+      "indexer: contract event failed validation; stored as invalid",
+    );
+  }
+
+  return {
+    ledger: event.ledger,
+    txHash: event.txHash,
+    opIndex: parseEventOpIndex(event.id, fallbackIndex),
+    eventType: decoded.eventType,
+    marketId: decoded.marketId,
+    payload: eventDataOf(decoded),
+  };
 }
 
 export function createSorobanRpcClient(): SorobanRpcClient {
@@ -73,13 +128,10 @@ export function createSorobanRpcClient(): SorobanRpcClient {
             return collected;
           }
           if (event.ledger >= startLedger) {
-            collected.push({
-              ledger: event.ledger,
-              txHash: event.txHash,
-              opIndex: parseEventOpIndex(event.id, fallbackIndex),
-              eventType: event.type,
-              payload: event.value,
-            });
+            const mapped = mapRpcEvent(event, env.PREDICTIFY_CONTRACT_ID, fallbackIndex);
+            if (mapped) {
+              collected.push(mapped);
+            }
           }
           fallbackIndex += 1;
         }
@@ -243,7 +295,7 @@ export class IndexerService {
     let inserted = 0;
     let replacements = 0;
     let repairedPredictions = 0;
-    const uniqueEvents = dedupeEvents(events as RecoveryEvent[]);
+    const uniqueEvents = dedupeEvents(events as RecoveryEvent[]) as IndexerEventInput[];
 
     for (const event of uniqueEvents) {
       const existing = await pool.query<{ tx_hash: string }>(
@@ -274,8 +326,8 @@ export class IndexerService {
         repairedPredictions += repaired.rowCount ?? 0;
       }
       const result = await pool.query(
-        `INSERT INTO indexer_events (ledger, tx_hash, op_index, event_type, data, canonical)
-         VALUES ($1, $2, $3, $4, $5::jsonb)
+        `INSERT INTO indexer_events (ledger, tx_hash, op_index, event_type, market_id, data)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)
          ON CONFLICT (ledger, tx_hash, op_index) DO NOTHING
          RETURNING id`,
         [
@@ -283,6 +335,7 @@ export class IndexerService {
           event.txHash,
           event.opIndex,
           event.eventType ?? "unknown",
+          event.marketId ?? null,
           event.payload === undefined ? null : JSON.stringify(event.payload),
         ],
       );

@@ -31,7 +31,7 @@ describe("IndexerService durable event recovery", () => {
     await expect(service.persistEventsWithRecovery([{ ledger: 10, txHash: "tx-10", opIndex: 2, payload: { amount: "5" } }])).resolves.toMatchObject({ inserted: 1, replacements: 0 });
     expect(query).toHaveBeenLastCalledWith(
       expect.stringContaining("ON CONFLICT (ledger, tx_hash, op_index) DO NOTHING"),
-      [10, "tx-10", 2, "unknown", JSON.stringify({ amount: "5" })],
+      [10, "tx-10", 2, "unknown", null, JSON.stringify({ amount: "5" })],
     );
   });
 
