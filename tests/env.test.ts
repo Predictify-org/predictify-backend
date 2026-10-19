@@ -113,4 +113,62 @@ describe("env schema", () => {
       expect(mockPinoWarn).not.toHaveBeenCalled();
     });
   });
+
+  describe("boolean env coercion & schedule validation (#982)", () => {
+    afterEach(() => {
+      delete process.env.RECONCILIATION_ENABLED;
+      delete process.env.TRUST_PROXY;
+      delete process.env.SLOW_QUERY_ALERTER_ENABLED;
+      delete process.env.RECONCILIATION_SCHEDULE;
+    });
+
+    it("Row 8: parses RECONCILIATION_ENABLED=false as false", () => {
+      setEnv({ RECONCILIATION_ENABLED: "false" });
+      const { env } = loadEnv();
+      expect(env.RECONCILIATION_ENABLED).toBe(false);
+    });
+
+    it("accepts true/false/1/0/yes/no case-insensitively across boolean flags", () => {
+      setEnv({
+        RECONCILIATION_ENABLED: "YES",
+        TRUST_PROXY: "0",
+        SLOW_QUERY_ALERTER_ENABLED: "No",
+      });
+      const { env } = loadEnv();
+      expect(env.RECONCILIATION_ENABLED).toBe(true);
+      expect(env.TRUST_PROXY).toBe(false);
+      expect(env.SLOW_QUERY_ALERTER_ENABLED).toBe(false);
+
+      setEnv({
+        RECONCILIATION_ENABLED: "1",
+        TRUST_PROXY: "True",
+        SLOW_QUERY_ALERTER_ENABLED: "FALSE",
+      });
+      const { env: env2 } = loadEnv();
+      expect(env2.RECONCILIATION_ENABLED).toBe(true);
+      expect(env2.TRUST_PROXY).toBe(true);
+      expect(env2.SLOW_QUERY_ALERTER_ENABLED).toBe(false);
+    });
+
+    it("Row 9: rejects TRUST_PROXY=maybe and invalid RECONCILIATION_SCHEDULE", () => {
+      const { envSchema } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("../src/config/env-schema") as typeof import("../src/config/env-schema");
+      expect(
+        envSchema.safeParse({ ...BASE_ENV, TRUST_PROXY: "maybe" }).success,
+      ).toBe(false);
+      expect(
+        envSchema.safeParse({
+          ...BASE_ENV,
+          RECONCILIATION_SCHEDULE: "61 * * * *",
+        }).success,
+      ).toBe(false);
+      expect(
+        envSchema.safeParse({
+          ...BASE_ENV,
+          RECONCILIATION_SCHEDULE: "*/15 * * * *",
+        }).success,
+      ).toBe(true);
+    });
+  });
 });
