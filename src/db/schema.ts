@@ -9,7 +9,9 @@ import {
   jsonb,
   index,
   primaryKey,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const users = pgTable(
   "users",
@@ -254,26 +256,54 @@ export const fraudFlags = pgTable(
 
 export type FraudFlag = typeof fraudFlags.$inferSelect;
 
-export const claims = pgTable("claims", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  marketId: text("market_id")
-    .notNull()
-    .references(() => markets.id),
-  amount: text("amount").notNull(),
-  status: text("status").notNull().default("pending"),
-  settlementTx: text("settlement_tx"),
-  settleAttempts: integer("settle_attempts").notNull().default(0),
-  nextSettleAttemptAt: timestamp("next_settle_attempt_at", {
-    withTimezone: true,
+/**
+ * claims — one row per user-signed `claim_winnings` attempt.
+ *
+ * State machine: prepared → submitting → paid | failed, plus prepared →
+ * expired. `paid` rows are finalized (`settled` / `rejected`) by the
+ * settle-confirmer. A partial unique index allows at most one non-terminal
+ * (prepared / submitting / paid) claim per (user, market).
+ */
+export const claims = pgTable(
+  "claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    marketId: text("market_id")
+      .notNull()
+      .references(() => markets.id),
+    amount: text("amount").notNull(),
+    status: text("status").notNull().default("pending"),
+    settlementTx: text("settlement_tx"),
+    settleAttempts: integer("settle_attempts").notNull().default(0),
+    nextSettleAttemptAt: timestamp("next_settle_attempt_at", {
+      withTimezone: true,
+    }),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /** `claim_nonce` (u64, decimal string) the prepared transaction was built with. */
+    claimNonce: text("claim_nonce"),
+    /** Hex hash of the prepared (unsigned) transaction — the submit-time authority. */
+    expectedTxHash: text("expected_tx_hash"),
+    /** Prepared unsigned transaction envelope (base64 XDR). */
+    preparedXdr: text("prepared_xdr"),
+    /** After this instant a prepared claim can no longer be submitted. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Stable error code (never raw SDK text) for failed / expired claims. */
+    errorCode: text("error_code"),
+  },
+  (t) => ({
+    claimsOneActivePerUserMarketIdx: uniqueIndex(
+      "claims_one_active_per_user_market_idx",
+    )
+      .on(t.userId, t.marketId)
+      .where(sql`${t.status} in ('prepared', 'submitting', 'paid')`),
   }),
-  settledAt: timestamp("settled_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+);
 
 export const disputes = pgTable("disputes", {
   id: uuid("id").primaryKey().defaultRandom(),

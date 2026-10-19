@@ -1,129 +1,232 @@
 /**
  * claimService.ts
  *
- * Handles the on-chain claim flow for winning predictions. After a market is
- * resolved, users call this endpoint to build, simulate, and submit a Soroban
- * claim transaction that transfers their winnings to their Stellar account.
+ * User-signed claim flow for winning predictions.
  *
- * Architecture
- * ------------
- * The service is split into a public function (`claimWinnings`) and a
- * repository interface (`ClaimTxBuilder`) so that the Soroban RPC interaction
- * can be easily mocked in tests without a live network.
+ * `claim_winnings(user, market_id, claim_nonce)` calls `user.require_auth()`,
+ * so the server can never submit a claim on its own. The flow is two steps:
  *
- * Idempotency
- * -----------
- * If a prediction already has `claimTxHash` populated, the function returns the
- * existing data without making any on-chain calls. The HTTP-layer
- * Idempotency-Key middleware provides an additional safeguard against duplicate
- * submissions.
+ *  1. prepare — validate the market / prediction, resolve `claim_nonce`, build
+ *     and simulate an unsigned transaction whose source is the user, and store
+ *     it as a `claims` row (`status = "prepared"`) with its expected hash.
+ *  2. submit  — accept the wallet-signed XDR, verify it is exactly the
+ *     prepared transaction, then relay it and record the result.
+ *
+ * State machine (`claims.status`)
+ * -------------------------------
+ *   prepared ──► submitting ──► paid ──► settled | rejected  (settle-confirmer)
+ *      │              │
+ *      │              └──► failed      (RPC ERROR)
+ *      └──► expired                     (submitted after expiresAt)
+ *
+ * Why hash equality is the authority: a wallet signature does not change a
+ * transaction's hash, so `inner tx hash == prepared hash` proves the signed
+ * envelope is byte-for-byte the transaction we simulated — same source,
+ * contract, function, arguments, fee, footprint and time bounds. The
+ * field-by-field checks in `ClaimChain.verifySigned` exist only to give clear
+ * error codes.
+ *
+ * Concurrency: `prepared → submitting` is a conditional UPDATE
+ * (`WHERE status = 'prepared'`), so concurrent submits of one claim cannot
+ * both reach the RPC. A partial unique index allows at most one non-terminal
+ * claim per (user, market).
  */
 
-import { and, eq } from "drizzle-orm";
-import { db } from "../db";
-import { markets, predictions } from "../db/schema";
-import { env } from "../config/env";
 import { logger } from "../config/logger";
+import { env } from "../config/env";
+import { getRequestId } from "../lib/requestContext";
+import { claimsPreparedTotal, claimsSubmittedTotal } from "../metrics/registry";
+import {
+    SimulatedClaimNonceSource,
+    SorobanClaimChain,
+    mapSendErrorCode,
+    type ClaimChain,
+    type ClaimNonceSource,
+} from "./claimChain";
+import { ClaimError } from "./claimErrors";
+
+export { ClaimError } from "./claimErrors";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface ClaimInput {
-    /** Database UUID of the resolved market. */
-    marketId: string;
-    /** Database UUID of the authenticated user. */
+export type ClaimStatus =
+    | "prepared"
+    | "submitting"
+    | "paid"
+    | "failed"
+    | "expired"
+    | "settled"
+    | "rejected";
+
+export interface ClaimRecord {
+    id: string;
     userId: string;
-    /** Stellar G-address of the user (from JWT sub claim). */
+    marketId: string;
+    amount: string;
+    status: ClaimStatus;
+    settlementTx: string | null;
+    claimNonce: string | null;
+    expectedTxHash: string | null;
+    preparedXdr: string | null;
+    expiresAt: Date | null;
+    errorCode: string | null;
+    createdAt: Date;
+}
+
+export interface ClaimContext {
+    market: { status: string } | null;
+    prediction: {
+        id: string;
+        result: string | null;
+        amount: string;
+        claimTxHash: string | null;
+        claimedAt: Date | null;
+    } | null;
+}
+
+export interface NewPreparedClaim {
+    userId: string;
+    marketId: string;
+    amount: string;
+    claimNonce: string;
+    expectedTxHash: string;
+    preparedXdr: string;
+    expiresAt: Date;
+}
+
+export interface TransitionPatch {
+    settlementTx?: string;
+    errorCode?: string;
+    /** Only transition while `expiresAt` is still in the future. */
+    notExpiredAt?: Date;
+}
+
+/** Persistence port — a Drizzle implementation lives in `claimRepo.ts`. */
+export interface ClaimRepo {
+    loadContext(marketId: string, userId: string): Promise<ClaimContext>;
+    /** The user's non-failed claim for the market (prepared / submitting / paid / settled). */
+    findActiveClaim(userId: string, marketId: string): Promise<ClaimRecord | null>;
+    /** True if a paid / settled claim exists, i.e. a nonce may have been consumed on-chain. */
+    hasConsumedNonce(userId: string, marketId: string): Promise<boolean>;
+    /** Inserts a prepared claim; returns null when the one-active-claim index rejects it. */
+    insertPrepared(input: NewPreparedClaim): Promise<ClaimRecord | null>;
+    findById(id: string): Promise<ClaimRecord | null>;
+    /** Atomic `UPDATE … WHERE id AND status = from`; returns null if the row was not in `from`. */
+    transition(
+        id: string,
+        from: ClaimStatus,
+        to: ClaimStatus,
+        patch?: TransitionPatch,
+    ): Promise<ClaimRecord | null>;
+    recordPredictionClaim(
+        userId: string,
+        marketId: string,
+        txHash: string,
+        claimedAt: Date,
+    ): Promise<void>;
+}
+
+export interface ClaimDeps {
+    repo: ClaimRepo;
+    chain: ClaimChain;
+    nonceSource: ClaimNonceSource;
+    now?: () => Date;
+}
+
+export interface PrepareClaimInput {
+    /** On-chain market id; must be a valid Soroban Symbol. */
+    marketId: string;
+    userId: string;
+    /** Stellar G-address of the authenticated user. */
     stellarAddress: string;
 }
 
-export interface ClaimResult {
-    /** Prediction row id. */
-    predictionId: string;
-    /** "won" | "lost" | null */
+export interface PrepareClaimResult {
+    claimId: string;
+    xdr: string;
+    networkPassphrase: string;
+    expiresAt: string;
+}
+
+export interface SubmitClaimInput {
+    claimId: string;
+    userId: string;
+    stellarAddress: string;
+    signedXdr: string;
+}
+
+export interface SubmitClaimResult {
+    claimId: string;
+    status: string;
+    predictionId: string | null;
     result: string | null;
-    /** Soroban transaction hash, or null if the prediction was not a winner. */
     claimTxHash: string | null;
-    /** ISO timestamp of when the claim was submitted (null if not claimed). */
     claimedAt: string | null;
 }
 
-/**
- * Interface for the Soroban transaction builder — extracted so tests can
- * provide a mock that never talks to a real RPC endpoint.
- */
-export interface ClaimTxBuilder {
-    /**
-     * Builds, simulates, and submits a Soroban `claim(marketId, user)` call.
-     *
-     * @param marketId  On-chain market identifier (primary key in `markets`).
-     * @param user      Stellar G-address of the user claiming.
-     * @returns The on-chain transaction hash (hex-encoded string).
-     */
-    submitClaimTx(marketId: string, user: string): Promise<string>;
-}
-
 // ---------------------------------------------------------------------------
-// Domain errors
+// Default dependencies
 // ---------------------------------------------------------------------------
 
-/**
- * Thrown by `claimWinnings` for business-rule violations (e.g. market not
- * resolved, prediction not a winner). Caught by the route handler and
- * translated into the standard error envelope.
- */
-export class ClaimError extends Error {
-    public readonly status: number;
-    public readonly code: string;
+let defaultDeps: ClaimDeps | undefined;
 
-    constructor(status: number, code: string, message: string) {
-        super(message);
-        this.name = "ClaimError";
-        this.status = status;
-        this.code = code;
+async function getDefaultDeps(): Promise<ClaimDeps> {
+    if (!defaultDeps) {
+        const { rpc } = await import("@stellar/stellar-sdk");
+        const { DrizzleClaimRepo } = await import("./claimRepo");
+        const server = new rpc.Server(env.SOROBAN_RPC_URL, {
+            allowHttp: env.SOROBAN_RPC_URL.startsWith("http://"),
+        });
+        defaultDeps = {
+            repo: new DrizzleClaimRepo(),
+            chain: new SorobanClaimChain(server),
+            nonceSource: new SimulatedClaimNonceSource(server),
+        };
     }
+    return defaultDeps;
 }
 
 // ---------------------------------------------------------------------------
-// Main service function
+// Helpers
+// ---------------------------------------------------------------------------
+
+function logTransition(claim: ClaimRecord, from: ClaimStatus, extra?: Record<string, unknown>): void {
+    logger.info(
+        { reqId: getRequestId(), claimId: claim.id, from, to: claim.status, ...extra },
+        "claim: state change",
+    );
+}
+
+function preparedResult(claim: ClaimRecord, chain: ClaimChain): PrepareClaimResult {
+    return {
+        claimId: claim.id,
+        xdr: claim.preparedXdr as string,
+        networkPassphrase: chain.networkPassphrase,
+        expiresAt: (claim.expiresAt as Date).toISOString(),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Prepare
 // ---------------------------------------------------------------------------
 
 /**
- * Claims winnings for a winning prediction after market resolution.
+ * Validates the claim and returns an unsigned, simulated `claim_winnings`
+ * transaction for the user's wallet to sign.
  *
- * Flow:
- *  1. Validate the market exists and is in "resolved" status.
- *  2. Look up the user's prediction for this market.
- *  3. If already claimed (claimTxHash is set) → return existing data.
- *  4. If the prediction result is not "won" → reject.
- *  5. Build & submit the Soroban claim transaction.
- *  6. Persist claimTxHash and claimedAt on the prediction row.
- *  7. Return the updated result.
- *
- * @throws {ClaimError}   When business rules are violated.
- * @throws {Error}        For unexpected failures (bubbles to global error handler).
+ * @throws {ClaimError} Business-rule violations and mapped chain failures.
  */
-export async function claimWinnings(
-    input: ClaimInput,
-    txBuilder?: ClaimTxBuilder,
-): Promise<ClaimResult> {
+export async function prepareClaim(
+    input: PrepareClaimInput,
+    deps?: ClaimDeps,
+): Promise<PrepareClaimResult> {
+    const { repo, chain, nonceSource, now = () => new Date() } = deps ?? (await getDefaultDeps());
     const { marketId, userId, stellarAddress } = input;
 
-    // Use the production builder if none was injected (DI for testability).
-    const builder = txBuilder ?? new SorobanClaimTxBuilder();
-
-    // ── 1. Validate market ────────────────────────────────────────────────
-    const [market] = await db
-        .select({ status: markets.status, winningOutcome: markets.winningOutcome })
-        .from(markets)
-        .where(eq(markets.id, marketId))
-        .limit(1);
-
-    if (!market) {
-        throw new ClaimError(404, "market_not_found", "Market not found");
-    }
-
+    const { market, prediction } = await repo.loadContext(marketId, userId);
+    if (!market) throw new ClaimError(404, "market_not_found", "Market not found");
     if (market.status !== "resolved") {
         throw new ClaimError(
             400,
@@ -131,24 +234,6 @@ export async function claimWinnings(
             "Market must be resolved before claims can be processed",
         );
     }
-
-    // ── 2. Look up the user's prediction ──────────────────────────────────
-    const [prediction] = await db
-        .select({
-            id: predictions.id,
-            result: predictions.result,
-            claimTxHash: predictions.claimTxHash,
-            claimedAt: predictions.claimedAt,
-        })
-        .from(predictions)
-        .where(
-            and(
-                eq(predictions.marketId, marketId),
-                eq(predictions.userId, userId),
-            ),
-        )
-        .limit(1);
-
     if (!prediction) {
         throw new ClaimError(
             404,
@@ -156,24 +241,13 @@ export async function claimWinnings(
             "No prediction found for this user and market",
         );
     }
-
-    // ── 3. Already claimed → idempotent return ────────────────────────────
     if (prediction.claimTxHash) {
-        logger.info(
-            { marketId, userId, claimTxHash: prediction.claimTxHash },
-            "claim: already claimed — returning existing data",
+        throw new ClaimError(
+            409,
+            "claim_already_submitted",
+            "Winnings for this market have already been claimed",
         );
-        return {
-            predictionId: prediction.id,
-            result: prediction.result,
-            claimTxHash: prediction.claimTxHash,
-            claimedAt: prediction.claimedAt
-                ? prediction.claimedAt.toISOString()
-                : null,
-        };
     }
-
-    // ── 4. Validate prediction result ─────────────────────────────────────
     if (prediction.result !== "won") {
         throw new ClaimError(
             400,
@@ -182,119 +256,228 @@ export async function claimWinnings(
         );
     }
 
-    // ── 5. Submit Soroban claim transaction ───────────────────────────────
-    let txHash: string;
-    try {
-        txHash = await builder.submitClaimTx(marketId, stellarAddress);
-    } catch (err) {
-        logger.error(
-            { err, marketId, userId },
-            "claim: Soroban transaction submission failed",
-        );
-        throw new ClaimError(
-            500,
-            "claim_tx_failed",
-            `Failed to submit claim transaction: ${(err as Error).message}`,
-        );
+    // At most one non-terminal claim per (user, market).
+    const existing = await repo.findActiveClaim(userId, marketId);
+    if (existing) {
+        if (existing.status === "prepared") {
+            if (existing.expiresAt && existing.expiresAt.getTime() > now().getTime()) {
+                return preparedResult(existing, chain);
+            }
+            const expired = await repo.transition(existing.id, "prepared", "expired", {
+                errorCode: "claim_expired",
+            });
+            if (expired) logTransition(expired, "prepared");
+        } else if (existing.status === "submitting") {
+            throw new ClaimError(409, "claim_in_progress", "A claim is already being submitted");
+        } else {
+            throw new ClaimError(
+                409,
+                "claim_already_submitted",
+                "Winnings for this market have already been claimed",
+            );
+        }
     }
 
-    // ── 6. Persist claim tx hash ──────────────────────────────────────────
-    const now = new Date();
-    await db
-        .update(predictions)
-        .set({ claimTxHash: txHash, claimedAt: now })
-        .where(eq(predictions.id, prediction.id));
+    const nonce = await nonceSource.getClaimNonce({
+        user: stellarAddress,
+        marketSymbol: marketId,
+        hasPriorClaim: await repo.hasConsumedNonce(userId, marketId),
+    });
 
+    let prepared;
+    try {
+        prepared = await chain.prepare({ user: stellarAddress, marketSymbol: marketId, nonce });
+    } catch (err) {
+        if (err instanceof ClaimError) {
+            logger.error(
+                { reqId: getRequestId(), marketId, userId, code: err.code, err: err.detail ?? err },
+                "claim: prepare failed",
+            );
+        }
+        throw err;
+    }
+
+    const inserted = await repo.insertPrepared({
+        userId,
+        marketId,
+        amount: prediction.amount,
+        claimNonce: nonce.toString(),
+        expectedTxHash: prepared.hash,
+        preparedXdr: prepared.xdr,
+        expiresAt: prepared.expiresAt,
+    });
+    if (!inserted) {
+        // Lost a race with a concurrent prepare: hand back the winner's claim.
+        const winner = await repo.findActiveClaim(userId, marketId);
+        if (winner?.status === "prepared") return preparedResult(winner, chain);
+        throw new ClaimError(409, "claim_in_progress", "A claim is already being submitted");
+    }
+
+    claimsPreparedTotal.inc();
     logger.info(
-        { marketId, userId, claimTxHash: txHash },
-        "claim: winnings claimed successfully",
+        { reqId: getRequestId(), claimId: inserted.id, marketId, userId, nonce: inserted.claimNonce },
+        "claim: prepared",
     );
+    return preparedResult(inserted, chain);
+}
 
+// ---------------------------------------------------------------------------
+// Submit
+// ---------------------------------------------------------------------------
+
+async function toSubmitResult(
+    claim: ClaimRecord,
+    deps: ClaimDeps,
+): Promise<SubmitClaimResult> {
+    const { prediction } = await deps.repo.loadContext(claim.marketId, claim.userId);
     return {
-        predictionId: prediction.id,
-        result: prediction.result,
-        claimTxHash: txHash,
-        claimedAt: now.toISOString(),
+        claimId: claim.id,
+        status: claim.status,
+        predictionId: prediction?.id ?? null,
+        result: prediction?.result ?? null,
+        claimTxHash: claim.settlementTx,
+        claimedAt: prediction?.claimedAt?.toISOString() ?? null,
     };
 }
 
-// ---------------------------------------------------------------------------
-// Production Soroban transaction builder
-// ---------------------------------------------------------------------------
-
-/**
- * Builds and submits a Soroban claim transaction using `@stellar/stellar-sdk`.
- *
- * Under the hood:
- *  1. Connects to the configured Soroban-RPC endpoint.
- *  2. Constructs a `claim( marketId: string, user: address )` contract invocation.
- *  3. Simulates the transaction to obtain the footprint + fee.
- *  4. Assembles the final transaction and submits it.
- *
- * NOTE: In a production setting the signing key-pair would be managed by a
- * secure key-management service (e.g. HashiCorp Vault, AWS KMS). For this MVP
- * the server must be configured with a Stellar secret key that has sufficient
- * XLM balance to cover transaction fees.
- */
-export class SorobanClaimTxBuilder implements ClaimTxBuilder {
-    async submitClaimTx(marketId: string, user: string): Promise<string> {
-        const { SorobanRpc, Contract, nativeToScVal, TransactionBuilder, Networks, BASE_FEE } = await import(
-            "@stellar/stellar-sdk"
-        );
-
-        const server = new SorobanRpc.Server(env.SOROBAN_RPC_URL);
-        const contract = new Contract(env.PREDICTIFY_CONTRACT_ID);
-
-        // Build the Soroban invocation for claim(marketId, user).
-        // The contract function is expected to be: `fn claim(market_id: String, user: Address)`
-        const invocation = contract.call(
-            "claim",
-            nativeToScVal(marketId, { type: "string" }),
-            nativeToScVal(user, { type: "address" }),
-        );
-
-        // ── Simulate the transaction ───────────────────────────────────────
-        const account = await server.getAccount(env.PREDICTIFY_CONTRACT_ID);
-
-        const tx = new TransactionBuilder(account, {
-            fee: BASE_FEE,
-            networkPassphrase:
-                env.STELLAR_NETWORK === "testnet"
-                    ? Networks.TESTNET
-                    : Networks.PUBLIC,
-        })
-            .addOperation(invocation)
-            .setTimeout(30)
-            .build();
-
-        const simulateResp = await server.simulateTransaction(tx);
-
-        if (SorobanRpc.Api.isSimulationError(simulateResp)) {
-            throw new Error(
-                `Soroban simulation failed: ${simulateResp.error ?? "unknown error"}`,
+/** Maps a claim that cannot be submitted (again) to its stored result or a 409. */
+async function resolveNonSubmittable(
+    claim: ClaimRecord,
+    deps: ClaimDeps,
+): Promise<SubmitClaimResult> {
+    switch (claim.status) {
+        case "paid":
+        case "settled":
+            return toSubmitResult(claim, deps);
+        case "expired":
+            throw new ClaimError(409, "claim_expired", "Claim has expired; prepare a new one");
+        case "failed":
+        case "rejected":
+            throw new ClaimError(
+                409,
+                claim.errorCode ?? "claim_rejected",
+                "Claim was rejected; prepare a new one",
             );
-        }
-
-        // ── Assemble & submit ──────────────────────────────────────────────
-        // In production the fee-bump / signer key would come from a secure store.
-        // Here we assume the server has a funded account for fees.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const preparedTx: any = SorobanRpc.assembleTransaction(tx, simulateResp);
-
-        // Submit without additional signature (the contract account pays fees).
-        // If a server-side signer is configured, sign here:
-        //   const serverKeypair = Keypair.fromSecret(env.SERVER_SIGNER_SECRET);
-        //   preparedTx.sign(serverKeypair);
-
-        const sendResp = await server.sendTransaction(preparedTx);
-
-        if (sendResp.status === "PENDING" || sendResp.status === "DUPLICATE") {
-            return sendResp.hash;
-        }
-
-        throw new Error(
-            `Soroban transaction rejected: ${sendResp.errorResult?.toString() ?? "unknown error"}`,
-        );
+        default:
+            throw new ClaimError(409, "claim_in_progress", "Claim is already being submitted");
     }
 }
 
+/**
+ * Verifies a wallet-signed claim transaction against the prepared one and
+ * relays it to the network.
+ *
+ * @throws {ClaimError} Business-rule violations and mapped chain failures.
+ */
+export async function submitClaim(
+    input: SubmitClaimInput,
+    deps?: ClaimDeps,
+): Promise<SubmitClaimResult> {
+    const resolved = deps ?? (await getDefaultDeps());
+    const { repo, chain, now = () => new Date() } = resolved;
+    const { claimId, userId, stellarAddress, signedXdr } = input;
+
+    const claim = await repo.findById(claimId);
+    if (!claim || claim.userId !== userId) {
+        throw new ClaimError(404, "claim_not_found", "Claim not found");
+    }
+    if (claim.status !== "prepared") return resolveNonSubmittable(claim, resolved);
+
+    if (!claim.expiresAt || claim.expiresAt.getTime() <= now().getTime()) {
+        const expired = await repo.transition(claim.id, "prepared", "expired", {
+            errorCode: "claim_expired",
+        });
+        if (expired) {
+            logTransition(expired, "prepared");
+            claimsSubmittedTotal.inc({ outcome: "expired" });
+        }
+        throw new ClaimError(409, "claim_expired", "Claim has expired; prepare a new one");
+    }
+
+    try {
+        chain.verifySigned(signedXdr, {
+            user: stellarAddress,
+            marketSymbol: claim.marketId,
+            nonce: BigInt(claim.claimNonce ?? "0"),
+            expectedTxHash: claim.expectedTxHash ?? "",
+        });
+    } catch (err) {
+        claimsSubmittedTotal.inc({ outcome: "mismatch" });
+        if (err instanceof ClaimError) {
+            logger.warn(
+                { reqId: getRequestId(), claimId, userId, reason: err.detail },
+                "claim: signed XDR rejected",
+            );
+        }
+        throw err;
+    }
+
+    // Only one concurrent submit can win this conditional transition.
+    const submitting = await repo.transition(claim.id, "prepared", "submitting", {
+        notExpiredAt: now(),
+    });
+    if (!submitting) {
+        const current = await repo.findById(claim.id);
+        if (current && current.status === "prepared") {
+            throw new ClaimError(409, "claim_expired", "Claim has expired; prepare a new one");
+        }
+        return resolveNonSubmittable(current ?? claim, resolved);
+    }
+    logTransition(submitting, "prepared");
+
+    let sent;
+    try {
+        sent = await chain.send(signedXdr);
+    } catch (err) {
+        // Outcome unknown. Re-submitting the same signed tx is safe (same hash,
+        // same sequence number), so return the claim to `prepared`.
+        logger.error(
+            { reqId: getRequestId(), claimId, userId, err },
+            "claim: sendTransaction threw",
+        );
+        const reverted = await repo.transition(claim.id, "submitting", "prepared");
+        if (reverted) logTransition(reverted, "submitting");
+        claimsSubmittedTotal.inc({ outcome: "error" });
+        throw new ClaimError(503, "claim_rpc_unavailable", "Network unavailable; please retry");
+    }
+
+    if (sent.status === "PENDING" || sent.status === "DUPLICATE") {
+        const paid = await repo.transition(claim.id, "submitting", "paid", {
+            settlementTx: sent.hash,
+        });
+        const claimedAt = now();
+        await repo.recordPredictionClaim(userId, claim.marketId, sent.hash, claimedAt);
+        claimsSubmittedTotal.inc({ outcome: "paid" });
+        if (paid) logTransition(paid, "submitting", { settlementTx: sent.hash });
+        return toSubmitResult(paid ?? { ...submitting, status: "paid", settlementTx: sent.hash }, resolved);
+    }
+
+    if (sent.status === "TRY_AGAIN_LATER") {
+        const reverted = await repo.transition(claim.id, "submitting", "prepared");
+        if (reverted) logTransition(reverted, "submitting");
+        claimsSubmittedTotal.inc({ outcome: "error" });
+        throw new ClaimError(503, "claim_rpc_unavailable", "Network busy; please retry");
+    }
+
+    const code = mapSendErrorCode(sent.errorResultXdr);
+    const failed = await repo.transition(claim.id, "submitting", "failed", { errorCode: code });
+    logger.error(
+        {
+            reqId: getRequestId(),
+            claimId,
+            userId,
+            rpcStatus: sent.status,
+            errorResultXdr: sent.errorResultXdr,
+        },
+        "claim: transaction rejected by network",
+    );
+    if (failed) logTransition(failed, "submitting", { errorCode: code });
+    claimsSubmittedTotal.inc({ outcome: "failed" });
+    throw new ClaimError(
+        code === "claim_expired" ? 409 : 422,
+        code,
+        code === "claim_expired"
+            ? "Claim has expired; prepare a new one"
+            : "Claim transaction was rejected by the network",
+    );
+}

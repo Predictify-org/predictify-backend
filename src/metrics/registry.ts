@@ -137,6 +137,19 @@ export const settleConfirmerFailedTotal = new Counter({
   registers: [register],
 });
 
+export const claimsPreparedTotal = new Counter({
+  name: "claims_prepared_total",
+  help: "Total number of unsigned claim_winnings transactions prepared for user signing",
+  registers: [register],
+});
+
+export const claimsSubmittedTotal = new Counter({
+  name: "claims_submitted_total",
+  help: "Total number of signed claim submissions, segmented by outcome (paid, failed, expired, mismatch, error)",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
 export const signupAnomalyScansTotal = new Counter({
   name: "signup_anomaly_scans_total",
   help: "Total number of signup-rate anomaly scans completed",
