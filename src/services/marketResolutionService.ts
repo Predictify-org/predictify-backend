@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db";
 import { markets, predictions, webhookSubscriptions } from "../db/schema";
 import { logger } from "../config/logger";
@@ -185,12 +185,22 @@ export class DrizzleMarketResolutionRepo implements MarketResolutionRepo {
         .where(eq(markets.id, marketId));
 
       // Single bulk UPDATE avoids N+1 round-trips; the DB evaluates the CASE.
+      // Only confirmed rows are scored: pending/failed rows never landed
+      // on-chain and must stay unclaimable (result NULL). Rows confirmed later
+      // are scored by the confirmer. `result IS NULL` keeps replays from
+      // flipping an existing won/lost value.
       await tx
         .update(predictions)
         .set({
           result: sql<string>`CASE WHEN ${predictions.outcome} = ${winningOutcome} THEN 'won' ELSE 'lost' END`,
         })
-        .where(eq(predictions.marketId, marketId));
+        .where(
+          and(
+            eq(predictions.marketId, marketId),
+            eq(predictions.status, "confirmed"),
+            isNull(predictions.result),
+          ),
+        );
 
       resolved = true;
     });

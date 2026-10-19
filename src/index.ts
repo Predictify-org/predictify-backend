@@ -63,7 +63,7 @@ import { requestContextStorage } from "./lib/requestContext";
 import { REQUEST_ID_HEADER } from "./lib/http";
 import { register } from "./metrics/registry";
 import { connectWithRetry, closeDb, db } from "./db/client";
-import { stopScheduler } from "./services/scheduler";
+import { initializeScheduler, stopScheduler } from "./services/scheduler";
 import { startIndexerHealthProbe } from "./jobs/indexerHealthProbe";
 import { indexerHealthRouter } from "./routes/indexer/health";
 import { indexerCursorRouter } from "./routes/indexer/cursor";
@@ -262,6 +262,7 @@ if (require.main === module) {
       marketResolverWorker.start();
       backupVerificationWorker.start();
       reconciliationWorker.start();
+      initializeScheduler();
       startSlowQueryAlerter();
       startIndexerHealthProbe();
 

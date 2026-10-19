@@ -10,6 +10,10 @@ export const register = new Registry();
 
 collectDefaultMetrics({ register });
 
+export function resetMetrics(): void {
+  register.resetMetrics();
+}
+
 export const httpRequestDuration = new Histogram({
   name: "http_request_duration_seconds",
   help: "Duration of HTTP requests in seconds, segmented by route template and status code",
@@ -72,6 +76,25 @@ export const indexerLagLedgers = new Gauge({
   registers: [register],
 });
 
+export const indexerEventsInsertedTotal = new Counter({
+  name: "indexer_events_inserted_total",
+  help: "Total number of indexer events inserted into the database",
+  registers: [register],
+});
+
+export const indexerReorgsDetectedTotal = new Counter({
+  name: "indexer_reorgs_detected_total",
+  help: "Total number of chain reorganizations detected by the indexer",
+  registers: [register],
+});
+
+export const indexerGapDetectedTotal = new Counter({
+  name: "indexer_gap_detected_total",
+  help: "Total number of indexer gaps detected during scanning",
+  labelNames: ["from", "to"] as const,
+  registers: [register],
+});
+
 export const scheduledReportRunsTotal = new Counter({
   name: "scheduled_report_runs_total",
   help: "Scheduled report runs by terminal outcome",
@@ -112,7 +135,20 @@ export const marketWatcherLeaseConflictsTotal = new Counter({
   registers: [register],
 });
 
-export const marketWatcherNotificationsTotal = new Counter({
+export const marketWatcherJobsRecoveredTotal = new Counter({
+  name: "market_watcher_jobs_recovered_total",
+  help: "Market watcher jobs recovered from expired leases or stuck retryable state",
+  registers: [register],
+});
+
+export const marketWatcherLeaseRenewalsTotal = new Counter({
+  name: "market_watcher_lease_renewals_total",
+  help: "Market watcher lease renewal attempts by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
+export const marketWatcherNotificationsTotal =new Counter({
   name: "market_watcher_notifications_total",
   help: "Total number of market watcher notifications generated and dispatched",
   registers: [register],
@@ -287,3 +323,13 @@ export const predictionsRequestDuration = new Histogram({
   registers: [register],
 });
 
+/**
+ * Total scheduled task executions segmented by task name and outcome
+ * (`enqueued` | `deduped` | `error`).
+ */
+export const schedulerRunsTotal = new Counter({
+  name: "scheduler_runs_total",
+  help: "Total number of scheduled task runs by task name and outcome",
+  labelNames: ["task", "outcome"] as const,
+  registers: [register],
+});

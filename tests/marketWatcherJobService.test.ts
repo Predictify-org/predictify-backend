@@ -17,7 +17,9 @@ import {
   MarketWatcherJobCoordinator,
   enqueueMarketWatcherJob,
   defaultMarketWatcherHandler,
+  LeaseLostError,
 } from "../src/services/marketWatcherJobService";
+import { MarketWatcherLeaseSweeper } from "../src/jobs/marketWatcherLeaseSweeper";
 import type { MarketWatcherJob } from "../src/db/schema";
 
 class InMemoryMarketWatcherJobRepo implements MarketWatcherJobRepo {
@@ -129,11 +131,42 @@ class InMemoryMarketWatcherJobRepo implements MarketWatcherJobRepo {
     return { status: job.status, attempt: job.attempt };
   }
 
-  async recoverExpiredLeases(now: Date): Promise<MarketWatcherJob[]> {
+  async renewLease(
+    jobId: string,
+    leaseToken: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    if (
+      !job ||
+      job.status !== "running" ||
+      job.leaseToken !== leaseToken ||
+      !job.leaseUntil ||
+      job.leaseUntil < now
+    ) {
+      return false;
+    }
+    job.leaseUntil = new Date(now.getTime() + leaseMs);
+    return true;
+  }
+
+  async listDueRetryable(now: Date, limit: number): Promise<MarketWatcherJob[]> {
+    return Array.from(this.jobs.values())
+      .filter((j) => j.status === "retryable" && (!j.nextAttemptAt || j.nextAttemptAt <= now))
+      .slice(0, limit)
+      .map((j) => ({ ...j }));
+  }
+
+  async recoverExpiredLeases(
+    now: Date,
+    maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+  ): Promise<MarketWatcherJob[]> {
     const recovered: MarketWatcherJob[] = [];
     for (const job of this.jobs.values()) {
       if (job.status === "running" && job.leaseUntil && job.leaseUntil < now) {
-        job.status = "retryable";
+        job.status = job.attempt >= maxAttempts ? "failed" : "retryable";
+        job.completedAt = job.status === "failed" ? now : null;
         job.leaseToken = null;
         job.leaseUntil = null;
         job.nextAttemptAt = now;
@@ -501,6 +534,203 @@ describe("marketWatcherJobService", () => {
       expect(recovered.length).toBe(1);
       expect(recovered[0].status).toBe("retryable");
       expect(recovered[0].leaseToken).toBeNull();
+    });
+  });
+
+  describe("recovery, renewal and conflict retry", () => {
+    const T0 = new Date("2026-08-29T10:00:00.000Z");
+    const dataFor = (job: MarketWatcherJob): MarketWatcherJobData => ({
+      jobId: job.id,
+      marketId: job.marketId,
+      eventType: job.eventType,
+      eventRef: "evt-1",
+      jobKey: job.jobKey,
+    });
+    const newJob = (repo: InMemoryMarketWatcherJobRepo) =>
+      repo.createOrGetJob({
+        marketId: "mkt-1",
+        jobKey: "mkt-1:market.resolved:evt-1",
+        eventType: "market.resolved",
+      });
+
+    it("recovers a crashed job via the sweeper, re-enqueues with a :recover: id, and succeeds", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      // Worker crashed: claimed, lease 1 minute, never completed.
+      await repo.claimJob(job.id, "dead-worker", T0, 60_000);
+
+      const added: Array<{ data: MarketWatcherJobData; opts: Record<string, unknown> }> = [];
+      const queue = {
+        add: jest.fn(async (_n: string, data: MarketWatcherJobData, opts: Record<string, unknown>) => {
+          added.push({ data, opts });
+        }),
+        // The original deterministic id exists but is completed.
+        getJob: jest.fn(async () => ({ getState: async () => "completed" })),
+      };
+      let now = new Date(T0.getTime() + 120_000);
+      const sweeper = new MarketWatcherLeaseSweeper(repo, {
+        queue,
+        lock: { acquire: async () => true },
+        intervalMs: 1000,
+        now: () => now,
+      });
+
+      const result = await sweeper.sweepOnce();
+      expect(result).toEqual({ locked: true, recovered: 1, enqueued: 1 });
+      expect((await repo.getJob(job.id))?.status).toBe("retryable");
+      expect(added[0].opts.jobId).toBe(`${job.jobKey}:recover:1`);
+
+      const coordinator = new MarketWatcherJobCoordinator(repo, { now: () => now, queue });
+      const handler = jest.fn().mockResolvedValue({ watchersNotified: 2 });
+      now = new Date(now.getTime() + 1000);
+      expect(await coordinator.process(added[0].data, handler)).toBe("succeeded");
+      expect((await repo.getJob(job.id))?.status).toBe("succeeded");
+    });
+
+    it("fails a poison job after maxAttempts including recovered attempts", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      const queue = {
+        add: jest.fn().mockResolvedValue({}),
+        getJob: jest.fn().mockResolvedValue(null),
+      };
+      let now = T0;
+      const sweeper = new MarketWatcherLeaseSweeper(repo, {
+        queue,
+        lock: { acquire: async () => true },
+        intervalMs: 1000,
+        maxAttempts: 2,
+        now: () => now,
+      });
+
+      for (let i = 0; i < 2; i++) {
+        await repo.claimJob(job.id, `dead-${i}`, now, 1000);
+        now = new Date(now.getTime() + 5000);
+        await sweeper.sweepOnce();
+      }
+
+      const final = await repo.getJob(job.id);
+      expect(final?.status).toBe("failed");
+      expect(final?.attempt).toBe(2);
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+
+    it("schedules a delayed recover re-add at lease_until + 1s on a live lease conflict", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      await repo.claimJob(job.id, "holder", T0, 60_000);
+      const queue = { add: jest.fn().mockResolvedValue({}) };
+      const now = new Date(T0.getTime() + 10_000);
+      const coordinator = new MarketWatcherJobCoordinator(repo, { now: () => now, queue });
+      const handler = jest.fn();
+
+      expect(await coordinator.process(dataFor(job), handler)).toBe("skipped");
+      expect(handler).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      const [, , opts] = queue.add.mock.calls[0];
+      expect(opts.delay).toBe(51_000);
+      expect(String(opts.jobId)).toContain(`${job.jobKey}:recover:1:`);
+    });
+
+    it("does not reschedule when the conflicting job is not running", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      await repo.claimJob(job.id, "holder", T0, 60_000);
+      await repo.markSucceeded(job.id, "holder", 1, T0);
+      const queue = { add: jest.fn() };
+      const coordinator = new MarketWatcherJobCoordinator(repo, { now: () => T0, queue });
+
+      expect(await coordinator.process(dataFor(job), jest.fn())).toBe("skipped");
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it("renews the lease between batches of a long fan-out and succeeds once", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      let now = T0;
+      const coordinator = new MarketWatcherJobCoordinator(repo, {
+        now: () => now,
+        leaseMs: 1000,
+        queue: { add: jest.fn() },
+      });
+      const batches = jest.fn();
+      const handler = async (input: { heartbeat?: () => Promise<void> }) => {
+        for (let i = 0; i < 3; i++) {
+          if (i > 0) await input.heartbeat?.();
+          batches();
+          now = new Date(now.getTime() + 800); // each batch nearly exhausts the lease
+        }
+        return { watchersNotified: 3 };
+      };
+
+      expect(await coordinator.process(dataFor(job), handler)).toBe("succeeded");
+      expect(batches).toHaveBeenCalledTimes(3);
+      expect((await repo.getJob(job.id))?.status).toBe("succeeded");
+    });
+
+    it("stops before the next batch and returns skipped when renewal fails", async () => {
+      const repo = new InMemoryMarketWatcherJobRepo();
+      const job = await newJob(repo);
+      let now = T0;
+      const coordinator = new MarketWatcherJobCoordinator(repo, {
+        now: () => now,
+        leaseMs: 1000,
+        queue: { add: jest.fn() },
+      });
+      const batches = jest.fn();
+      const handler = async (input: { heartbeat?: () => Promise<void> }) => {
+        for (let i = 0; i < 3; i++) {
+          if (i > 0) await input.heartbeat?.();
+          batches();
+          now = new Date(now.getTime() + 2000); // lease expires during the batch
+        }
+        return { watchersNotified: 3 };
+      };
+
+      expect(await coordinator.process(dataFor(job), handler)).toBe("skipped");
+      expect(batches).toHaveBeenCalledTimes(1);
+      expect((await repo.getJob(job.id))?.status).toBe("running");
+    });
+
+    it("defaultMarketWatcherHandler heartbeats between batches and stops on LeaseLostError", async () => {
+      const watchers = [{ userId: "u1" }, { userId: "u2" }, { userId: "u3" }];
+      const values = jest.fn().mockResolvedValue(undefined);
+      const database = {
+        select: () => ({ from: () => ({ where: async () => watchers }) }),
+        insert: () => ({ values }),
+      } as never;
+      const base = {
+        jobId: "j",
+        marketId: "m",
+        eventType: "e",
+        eventRef: "r",
+        jobKey: "m:e:r",
+        attempt: 1,
+      };
+
+      const heartbeat = jest.fn().mockResolvedValue(undefined);
+      const ok = await defaultMarketWatcherHandler({ ...base, heartbeat }, database, 1);
+      expect(ok.watchersNotified).toBe(3);
+      expect(values).toHaveBeenCalledTimes(3);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+
+      values.mockClear();
+      const lost = jest.fn().mockRejectedValue(new LeaseLostError());
+      await expect(
+        defaultMarketWatcherHandler({ ...base, heartbeat: lost }, database, 1),
+      ).rejects.toBeInstanceOf(LeaseLostError);
+      expect(values).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns zero without heartbeat when there are no watchers", async () => {
+      const database = {
+        select: () => ({ from: () => ({ where: async () => [] }) }),
+      } as never;
+      const res = await defaultMarketWatcherHandler(
+        { jobId: "j", marketId: "m", eventType: "e", eventRef: "r", jobKey: "k", attempt: 1 },
+        database,
+      );
+      expect(res.watchersNotified).toBe(0);
     });
   });
 });

@@ -632,7 +632,7 @@ describe("RPC client integration", () => {
     expect(row).toEqual({
       ledger: 100,
       txHash: "tx-100",
-      opIndex: 2,
+      opIndex: 1, // low 12 bits of the TOID in the event id
       eventType: "bet_plc",
       marketId: MARKET,
       payload: { bettor: BETTOR, outcome: "Yes", amount: "25000000", nonce: "7", timestamp: "1792000000" },
@@ -694,12 +694,18 @@ describe("RPC client integration", () => {
 
   it("persists market_id and a JSON-safe data column", async () => {
     const service = new IndexerService({ getLatestLedger: jest.fn(), getEvents: jest.fn() });
-    mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rowCount: 1 });
+    mockQuery.mockImplementation(async (sql: string) =>
+      sql.includes("INSERT INTO indexer_events")
+        ? { rowCount: 1, rows: [{ id: "1" }] }
+        : { rowCount: 0, rows: [] },
+    );
     const row = mapRpcEvent(rpcEvent(), CONTRACT_ID, 0);
     await service.persistEventsWithRecovery([row!]);
-    const [sql, params] = mockQuery.mock.calls[1];
+    const insert = mockQuery.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO indexer_events"));
+    const [sql, params] = insert!;
     expect(sql).toContain("market_id");
-    expect(params.slice(0, 5)).toEqual([100, "tx-100", 2, "bet_plc", MARKET]);
-    expect(JSON.parse(params[5])).toMatchObject({ bettor: BETTOR, amount: "25000000" });
+    expect(params[3]).toBe(1);
+    expect(params.slice(5, 7)).toEqual(["bet_plc", MARKET]);
+    expect(JSON.parse(params[7])).toMatchObject({ bettor: BETTOR, amount: "25000000" });
   });
 });

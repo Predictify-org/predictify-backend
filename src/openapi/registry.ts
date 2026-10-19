@@ -1400,6 +1400,11 @@ registry.registerPath({
       description: "Market or prediction not found",
       content: { "application/json": { schema: ErrorBody } },
     },
+    409: {
+      description:
+        "ambiguous_prediction: more than one confirmed prediction exists for the user and market",
+      content: { "application/json": { schema: ErrorBody } },
+    },
     500: {
       description: "Soroban transaction submission failed",
       content: { "application/json": { schema: ErrorBody } },
