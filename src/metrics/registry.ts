@@ -10,6 +10,10 @@ export const register = new Registry();
 
 collectDefaultMetrics({ register });
 
+export function resetMetrics(): void {
+  register.resetMetrics();
+}
+
 export const httpRequestDuration = new Histogram({
   name: "http_request_duration_seconds",
   help: "Duration of HTTP requests in seconds, segmented by route template and status code",
@@ -55,6 +59,25 @@ export const indexerPollsTotal = new Counter({
 export const indexerLagLedgers = new Gauge({
   name: "indexer_lag_ledgers",
   help: "Current lag in ledgers between the indexer cursor and the chain tip",
+  registers: [register],
+});
+
+export const indexerEventsInsertedTotal = new Counter({
+  name: "indexer_events_inserted_total",
+  help: "Total number of indexer events inserted into the database",
+  registers: [register],
+});
+
+export const indexerReorgsDetectedTotal = new Counter({
+  name: "indexer_reorgs_detected_total",
+  help: "Total number of chain reorganizations detected by the indexer",
+  registers: [register],
+});
+
+export const indexerGapDetectedTotal = new Counter({
+  name: "indexer_gap_detected_total",
+  help: "Total number of indexer gaps detected during scanning",
+  labelNames: ["from", "to"] as const,
   registers: [register],
 });
 
