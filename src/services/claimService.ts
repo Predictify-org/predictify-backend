@@ -133,7 +133,9 @@ export async function claimWinnings(
     }
 
     // ── 2. Look up the user's prediction ──────────────────────────────────
-    const [prediction] = await db
+    // Only confirmed rows are claimable. Fetch up to two so duplicates are
+    // detected deterministically instead of guessing with an unordered limit(1).
+    const confirmedRows = await db
         .select({
             id: predictions.id,
             result: predictions.result,
@@ -145,11 +147,46 @@ export async function claimWinnings(
             and(
                 eq(predictions.marketId, marketId),
                 eq(predictions.userId, userId),
+                eq(predictions.status, "confirmed"),
             ),
         )
-        .limit(1);
+        .orderBy(predictions.id)
+        .limit(2);
+
+    if (confirmedRows.length > 1) {
+        logger.error(
+            { marketId, userId, predictionIds: confirmedRows.map((r) => r.id) },
+            "claim: multiple confirmed predictions for user and market",
+        );
+        throw new ClaimError(
+            409,
+            "ambiguous_prediction",
+            "Multiple confirmed predictions found for this user and market",
+        );
+    }
+
+    const prediction = confirmedRows[0];
 
     if (!prediction) {
+        // Unconfirmed (pending/failed) rows exist but none is claimable.
+        const [unconfirmed] = await db
+            .select({ id: predictions.id })
+            .from(predictions)
+            .where(
+                and(
+                    eq(predictions.marketId, marketId),
+                    eq(predictions.userId, userId),
+                ),
+            )
+            .orderBy(predictions.id)
+            .limit(1);
+        if (unconfirmed) {
+            throw new ClaimError(
+                400,
+                "prediction_not_winning",
+                "No confirmed winning prediction found. Only confirmed winning predictions can be claimed",
+            );
+        }
         throw new ClaimError(
             404,
             "prediction_not_found",
