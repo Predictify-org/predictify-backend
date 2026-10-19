@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../db";
 import { db as defaultDb } from "../db";
 import {
@@ -20,6 +20,7 @@ import {
   marketWatcherJobRetriesTotal,
   marketWatcherJobRunsTotal,
   marketWatcherLeaseConflictsTotal,
+  marketWatcherLeaseRenewalsTotal,
   marketWatcherNotificationsTotal,
 } from "../metrics/registry";
 import { logger } from "../config/logger";
@@ -52,6 +53,19 @@ export interface MarketWatcherJobResult {
 
 export interface MarketWatcherJobHandlerInput extends MarketWatcherJobData {
   attempt: number;
+  /**
+   * Extends the job lease. Rejects with LeaseLostError when the lease was lost,
+   * in which case the handler must stop before doing further work.
+   */
+  heartbeat?: () => Promise<void>;
+}
+
+/** Thrown by heartbeat() when the lease could not be renewed. */
+export class LeaseLostError extends Error {
+  constructor(message = "market watcher job lease lost") {
+    super(message);
+    this.name = "LeaseLostError";
+  }
 }
 
 export type MarketWatcherNotificationHandler = (
@@ -85,7 +99,18 @@ export interface MarketWatcherJobRepo {
     maxAttempts: number;
     nextAttemptAt: Date;
   }): Promise<{ status: "retryable" | "failed"; attempt: number } | null>;
-  recoverExpiredLeases(now: Date): Promise<MarketWatcherJob[]>;
+  renewLease(
+    jobId: string,
+    leaseToken: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<boolean>;
+  /**
+   * Moves expired `running` jobs to `retryable`, or to `failed` once their
+   * attempts are exhausted. Returns the affected rows.
+   */
+  recoverExpiredLeases(now: Date, maxAttempts?: number): Promise<MarketWatcherJob[]>;
+  listDueRetryable(now: Date, limit: number): Promise<MarketWatcherJob[]>;
   getJob(jobId: string): Promise<MarketWatcherJob | null>;
 }
 
@@ -262,11 +287,53 @@ export class DrizzleMarketWatcherJobRepo implements MarketWatcherJobRepo {
     return { status, attempt: job.attempt };
   }
 
-  async recoverExpiredLeases(now: Date): Promise<MarketWatcherJob[]> {
+  async renewLease(
+    jobId: string,
+    leaseToken: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<boolean> {
+    const result = await this.database
+      .update(marketWatcherJobs)
+      .set({ leaseUntil: new Date(now.getTime() + leaseMs), updatedAt: now })
+      .where(
+        and(
+          eq(marketWatcherJobs.id, jobId),
+          eq(marketWatcherJobs.leaseToken, leaseToken),
+          eq(marketWatcherJobs.status, "running"),
+          gte(marketWatcherJobs.leaseUntil, now),
+        ),
+      )
+      .returning({ id: marketWatcherJobs.id });
+    return result.length === 1;
+  }
+
+  async listDueRetryable(now: Date, limit: number): Promise<MarketWatcherJob[]> {
+    return this.database
+      .select()
+      .from(marketWatcherJobs)
+      .where(
+        and(
+          eq(marketWatcherJobs.status, "retryable"),
+          or(
+            isNull(marketWatcherJobs.nextAttemptAt),
+            lte(marketWatcherJobs.nextAttemptAt, now),
+          ),
+        ),
+      )
+      .limit(limit);
+  }
+
+  async recoverExpiredLeases(
+    now: Date,
+    maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+  ): Promise<MarketWatcherJob[]> {
     return this.database
       .update(marketWatcherJobs)
       .set({
-        status: "retryable",
+        status: sql`CASE WHEN ${marketWatcherJobs.attempt} >= ${maxAttempts} THEN 'failed' ELSE 'retryable' END`,
+        lastError: "lease expired before completion",
+        completedAt: sql`CASE WHEN ${marketWatcherJobs.attempt} >= ${maxAttempts} THEN ${now} ELSE NULL END`,
         leaseToken: null,
         leaseUntil: null,
         nextAttemptAt: now,
@@ -415,9 +482,23 @@ export class MarketWatcherJobCoordinator {
     );
 
     if (!claimed) {
+      await this.rescheduleOnLiveLease(job);
       logger.info({ jobId: job.jobId, jobKey: job.jobKey }, "market_watcher_job_lease_skipped");
       return "skipped";
     }
+
+    const heartbeat = async (): Promise<void> => {
+      const renewed = await this.repository.renewLease(
+        claimed.id,
+        leaseToken,
+        this.now(),
+        this.leaseMs,
+      );
+      marketWatcherLeaseRenewalsTotal.inc({ outcome: renewed ? "renewed" : "lost" });
+      if (!renewed) {
+        throw new LeaseLostError();
+      }
+    };
 
     try {
       const result = await handler({
@@ -428,6 +509,7 @@ export class MarketWatcherJobCoordinator {
         jobKey: claimed.jobKey,
         payload: job.payload,
         attempt: claimed.attempt,
+        heartbeat,
       });
 
       if (!Number.isInteger(result.watchersNotified) || result.watchersNotified < 0) {
@@ -451,6 +533,13 @@ export class MarketWatcherJobCoordinator {
 
       return "succeeded";
     } catch (error) {
+      if (error instanceof LeaseLostError) {
+        logger.warn(
+          { jobId: job.jobId, jobKey: job.jobKey, leaseToken },
+          "market_watcher_job_lease_lost",
+        );
+        return "skipped";
+      }
       const message =
         error instanceof Error ? error.message : "unknown market watcher notification failure";
       const retryAt = new Date(
@@ -492,6 +581,26 @@ export class MarketWatcherJobCoordinator {
       return failed.status;
     }
   }
+
+  /**
+   * When a claim fails because another worker's lease is still live, schedule a
+   * delayed re-add just after the lease ends so a crashed holder cannot lose the job.
+   */
+  private async rescheduleOnLiveLease(job: MarketWatcherJobData): Promise<void> {
+    const stored = await this.repository.getJob(job.jobId);
+    if (!stored || stored.status !== "running" || !stored.leaseUntil) return;
+
+    const nowMs = this.now().getTime();
+    const leaseUntilMs = stored.leaseUntil.getTime();
+    if (leaseUntilMs < nowMs) return;
+
+    await this.queue.add("notify-watchers", job, {
+      jobId: `${job.jobKey}:recover:${stored.attempt}:${leaseUntilMs}`,
+      delay: leaseUntilMs + 1000 - nowMs,
+      removeOnComplete: false,
+      removeOnFail: false,
+    });
+  }
 }
 
 /**
@@ -501,6 +610,7 @@ export class MarketWatcherJobCoordinator {
 export async function defaultMarketWatcherHandler(
   input: MarketWatcherJobHandlerInput,
   database: Db = defaultDb,
+  batchSize = 500,
 ): Promise<MarketWatcherJobResult> {
   const watchers = await database
     .select({ userId: marketWatchers.userId })
@@ -522,9 +632,12 @@ export async function defaultMarketWatcherHandler(
     data: input.payload ?? {},
   }));
 
-  const BATCH_SIZE = 500;
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const chunk = rows.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < rows.length; i += batchSize) {
+    // Renew between batches; throws LeaseLostError so no further batch is written.
+    if (i > 0 && input.heartbeat) {
+      await input.heartbeat();
+    }
+    const chunk = rows.slice(i, i + batchSize);
     await database.insert(notifications).values(chunk);
   }
 

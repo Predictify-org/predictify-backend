@@ -29,7 +29,8 @@ const baseSchema = z.object({
 
   // ── Indexer tunables ──────────────────────────────────────
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
-  INDEXER_START_LEDGER: z.coerce.number().int().nonnegative().default(0),
+  MARKET_WATCHER_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  INDEXER_START_LEDGER:z.coerce.number().int().nonnegative().default(0),
   INDEXER_REWIND_LEDGERS: z.coerce.number().int().nonnegative().default(100),
   INDEXER_BACKFILL_CHUNK_SIZE: z.coerce.number().int().positive().default(500),
   INDEXER_GAP_SCAN_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
