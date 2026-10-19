@@ -100,7 +100,7 @@ describe("IndexerService.backfillRange", () => {
     ]);
 
     expect(poolQuery).toHaveBeenCalledWith(
-      expect.stringContaining("ON CONFLICT (ledger, tx_hash, op_index) DO NOTHING"),
+      expect.stringContaining("ON CONFLICT (ledger, tx_hash, op_index, event_index) DO NOTHING"),
       expect.any(Array),
     );
   });

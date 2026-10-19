@@ -8,10 +8,88 @@
  * treated as a reorg rather than a second canonical event.
  */
 
+export interface DecodedEventIdentity {
+  ledger: number;
+  txApplicationOrder: number;
+  opIndex: number;
+  eventIndex: number;
+}
+
+/**
+ * Decodes a Soroban RPC event id into its positional coordinates.
+ *
+ * Soroban RPC event IDs format:
+ *   <toid>-<event_index>
+ *
+ * The TOID prefix is a 64-bit integer encoding:
+ *   - ledger sequence (bits 32..63, 32 bits)
+ *   - transaction application order within ledger (bits 12..31, 20 bits)
+ *   - operation index within transaction (bits 0..11, 12 bits)
+ *
+ * The suffix after the hyphen is the zero-padded event index within that operation.
+ *
+ * Reference: Stellar Horizon / Soroban RPC TOID specification
+ * https://github.com/stellar/stellar-protocol
+ */
+export function decodeEventId(eventId: string): DecodedEventIdentity | null {
+  if (!eventId || typeof eventId !== "string") {
+    return null;
+  }
+  const parts = eventId.trim().split("-");
+  if (parts.length !== 2) {
+    return null;
+  }
+  const [toidStr, eventIndexStr] = parts;
+  if (!/^\d+$/.test(toidStr) || !/^\d+$/.test(eventIndexStr)) {
+    return null;
+  }
+
+  try {
+    const toid = BigInt(toidStr);
+    const eventIndex = Number.parseInt(eventIndexStr, 10);
+    if (!Number.isSafeInteger(eventIndex) || eventIndex < 0) {
+      return null;
+    }
+
+    const ledger = Number((toid >> 32n) & 0xffffffffn);
+    const txApplicationOrder = Number((toid >> 12n) & 0xfffffn);
+    const opIndex = Number(toid & 0xfffn);
+
+    return {
+      ledger,
+      txApplicationOrder,
+      opIndex,
+      eventIndex,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encodes positional coordinates into a standard Soroban RPC event ID.
+ */
+export function formatEventId(
+  ledger: number,
+  txApplicationOrder: number,
+  opIndex: number,
+  eventIndex: number,
+): string {
+  const toid =
+    (BigInt(ledger) << 32n) |
+    (BigInt(txApplicationOrder) << 12n) |
+    BigInt(opIndex);
+  const toidStr = toid.toString().padStart(19, "0");
+  const eventIndexStr = eventIndex.toString().padStart(10, "0");
+  return `${toidStr}-${eventIndexStr}`;
+}
+
 export interface RecoveryEvent {
   ledger: number;
   txHash: string;
+  txApplicationOrder?: number;
   opIndex: number;
+  eventIndex?: number;
   eventType?: string;
   payload?: unknown;
 }
@@ -23,7 +101,9 @@ export interface LedgerObservation {
 
 export interface ReorgReplacement {
   ledger: number;
+  txApplicationOrder: number;
   opIndex: number;
+  eventIndex: number;
   oldTxHash: string;
   newTxHash: string;
 }
@@ -33,12 +113,16 @@ export interface ReplayChunk {
   to: number;
 }
 
-export function eventIdentity(event: Pick<RecoveryEvent, "ledger" | "txHash" | "opIndex">): string {
-  return `${event.ledger}:${event.txHash}:${event.opIndex}`;
+export function eventIdentity(
+  event: Pick<RecoveryEvent, "ledger" | "txHash" | "opIndex"> & { eventIndex?: number },
+): string {
+  return `${event.ledger}:${event.txHash}:${event.opIndex}:${event.eventIndex ?? 0}`;
 }
 
-export function positionIdentity(event: Pick<RecoveryEvent, "ledger" | "opIndex">): string {
-  return `${event.ledger}:${event.opIndex}`;
+export function positionIdentity(
+  event: Pick<RecoveryEvent, "ledger" | "opIndex"> & { txApplicationOrder?: number; eventIndex?: number },
+): string {
+  return `${event.ledger}:${event.txApplicationOrder ?? 0}:${event.opIndex}:${event.eventIndex ?? 0}`;
 }
 
 /** Removes duplicate delivery while preserving first-seen order. */
@@ -109,7 +193,14 @@ export function detectReorgs(
   for (const event of dedupeEvents(replay)) {
     const previous = byPosition.get(positionIdentity(event));
     if (previous && previous.txHash !== event.txHash) {
-      replacements.push({ ledger: event.ledger, opIndex: event.opIndex, oldTxHash: previous.txHash, newTxHash: event.txHash });
+      replacements.push({
+        ledger: event.ledger,
+        txApplicationOrder: event.txApplicationOrder ?? 0,
+        opIndex: event.opIndex,
+        eventIndex: event.eventIndex ?? 0,
+        oldTxHash: previous.txHash,
+        newTxHash: event.txHash,
+      });
     }
   }
   return replacements;
@@ -143,7 +234,9 @@ export function assertCheckpointDecision(decision: CheckpointDecision): number {
 
 export function validateRecoveryEvent(event: RecoveryEvent): void {
   if (!Number.isSafeInteger(event.ledger) || event.ledger < 0) throw new Error("event ledger must be a non-negative safe integer");
+  if (event.txApplicationOrder !== undefined && (!Number.isSafeInteger(event.txApplicationOrder) || event.txApplicationOrder < 0)) throw new Error("event transaction application order must be non-negative");
   if (!Number.isSafeInteger(event.opIndex) || event.opIndex < 0) throw new Error("event operation index must be non-negative");
+  if (event.eventIndex !== undefined && (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0)) throw new Error("event index must be non-negative");
   if (event.txHash.trim().length === 0) throw new Error("event transaction hash is required");
 }
 
@@ -151,7 +244,11 @@ export function validateRecoveryEvent(event: RecoveryEvent): void {
 export function normalizeRecoveryBatch(events: RecoveryEvent[]): RecoveryEvent[] {
   for (const event of events) validateRecoveryEvent(event);
   return dedupeEvents(events).sort((left, right) =>
-    left.ledger - right.ledger || left.opIndex - right.opIndex || left.txHash.localeCompare(right.txHash),
+    left.ledger - right.ledger ||
+    (left.txApplicationOrder ?? 0) - (right.txApplicationOrder ?? 0) ||
+    left.opIndex - right.opIndex ||
+    (left.eventIndex ?? 0) - (right.eventIndex ?? 0) ||
+    left.txHash.localeCompare(right.txHash),
   );
 }
 

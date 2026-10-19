@@ -2,10 +2,12 @@ import {
   assertCheckpointDecision,
   chunkReplayRanges,
   decideCheckpoint,
+  decodeEventId,
   dedupeEvents,
   detectReorgs,
   eventIdentity,
   findUnobservedLedgers,
+  formatEventId,
   groupLedgerRanges,
   IndexerRecoveryPlanner,
   mergeObservations,
@@ -15,13 +17,63 @@ import {
   validateRecoveryEvent,
 } from "../src/services/indexerRecovery";
 
-const event = (ledger: number, txHash = `tx-${ledger}`, opIndex = 0) => ({ ledger, txHash, opIndex });
+const event = (
+  ledger: number,
+  txHash = `tx-${ledger}`,
+  opIndex = 0,
+  txApplicationOrder = 0,
+  eventIndex = 0,
+) => ({
+  ledger,
+  txHash,
+  txApplicationOrder,
+  opIndex,
+  eventIndex,
+});
+
+describe("TOID decoding and encoding", () => {
+  it("decodes a valid Soroban RPC event id into positional components", () => {
+    // ledger 1000, txApplicationOrder 4, opIndex 2, eventIndex 1
+    const eventId = formatEventId(1000, 4, 2, 1);
+    const decoded = decodeEventId(eventId);
+    expect(decoded).toEqual({
+      ledger: 1000,
+      txApplicationOrder: 4,
+      opIndex: 2,
+      eventIndex: 1,
+    });
+  });
+
+  it("handles zero values for all components", () => {
+    const eventId = formatEventId(0, 0, 0, 0);
+    const decoded = decodeEventId(eventId);
+    expect(decoded).toEqual({
+      ledger: 0,
+      txApplicationOrder: 0,
+      opIndex: 0,
+      eventIndex: 0,
+    });
+  });
+
+  it("rejects malformed event ids gracefully", () => {
+    expect(decodeEventId("")).toBeNull();
+    expect(decodeEventId(null as unknown as string)).toBeNull();
+    expect(decodeEventId(123 as unknown as string)).toBeNull();
+    expect(decodeEventId("not-an-event-id")).toBeNull();
+    expect(decodeEventId("12345")).toBeNull();
+    expect(decodeEventId("123-456-789")).toBeNull();
+    expect(decodeEventId("abc-0000000000")).toBeNull();
+    expect(decodeEventId("0000000000-xyz")).toBeNull();
+    expect(decodeEventId("-1-0")).toBeNull();
+    expect(decodeEventId("100-9999999999999999999999999999999999999")).toBeNull();
+  });
+});
 
 describe("indexer recovery identities", () => {
   it("separates event identity from ledger position", () => {
-    expect(eventIdentity(event(10, "a", 1))).toBe("10:a:1");
-    expect(positionIdentity(event(10, "b", 1))).toBe("10:1");
-    expect(eventIdentity(event(10, "a", 1))).not.toBe(eventIdentity(event(10, "b", 1)));
+    expect(eventIdentity(event(10, "a", 1, 0, 2))).toBe("10:a:1:2");
+    expect(positionIdentity(event(10, "b", 1, 3, 2))).toBe("10:3:1:2");
+    expect(eventIdentity(event(10, "a", 1, 0, 2))).not.toBe(eventIdentity(event(10, "b", 1, 0, 2)));
   });
 
   it("deduplicates exact redelivery without dropping distinct operations", () => {
@@ -56,6 +108,9 @@ describe("indexer recovery identities", () => {
     ]);
     expect(() => validateRecoveryEvent(event(-1))).toThrow("non-negative");
     expect(() => validateRecoveryEvent({ ledger: 1, txHash: "", opIndex: 0 })).toThrow("transaction hash");
+    expect(() => validateRecoveryEvent({ ledger: 1, txHash: "tx", opIndex: -1 })).toThrow("non-negative");
+    expect(() => validateRecoveryEvent({ ledger: 1, txHash: "tx", opIndex: 0, txApplicationOrder: -1 })).toThrow("non-negative");
+    expect(() => validateRecoveryEvent({ ledger: 1, txHash: "tx", opIndex: 0, eventIndex: -1 })).toThrow("non-negative");
   });
 
   it("merges paginated observations while preserving empty-ledger evidence", () => {
@@ -84,13 +139,13 @@ describe("indexer recovery identities", () => {
 describe("reorg detection", () => {
   it("detects replacement at the same ledger and operation", () => {
     expect(detectReorgs([event(20, "old", 2)], [event(20, "new", 2)])).toEqual([
-      { ledger: 20, opIndex: 2, oldTxHash: "old", newTxHash: "new" },
+      { ledger: 20, txApplicationOrder: 0, opIndex: 2, eventIndex: 0, oldTxHash: "old", newTxHash: "new" },
     ]);
   });
 
   it("ignores same-event replay and reports multiple replacements", () => {
     expect(detectReorgs([event(20, "old", 2), event(21, "keep")], [event(20, "old", 2), event(21, "new"), event(22)])).toEqual([
-      { ledger: 21, opIndex: 0, oldTxHash: "keep", newTxHash: "new" },
+      { ledger: 21, txApplicationOrder: 0, opIndex: 0, eventIndex: 0, oldTxHash: "keep", newTxHash: "new" },
     ]);
   });
 
