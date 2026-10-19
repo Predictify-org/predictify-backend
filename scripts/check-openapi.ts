@@ -77,6 +77,8 @@ export const EXPECTED_ROUTES: RouteEntry[] = [
   { method: "get", path: "/api/admin/rate-limit/inspect/{address}" },
   { method: "get", path: "/api/admin/health/detail" },
   { method: "get", path: "/api/admin/recon/markets/{id}" },
+  { method: "get", path: "/api/admin/recon/reports" },
+  { method: "get", path: "/api/admin/recon/reports/{id}" },
   { method: "get", path: "/api/webhooks" },
   { method: "get", path: "/api/admin/webhooks/dlq" },
   { method: "post", path: "/api/admin/webhooks/dlq/{id}/replay" },

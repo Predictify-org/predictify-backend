@@ -884,3 +884,73 @@ export const referralRewardAllocations = pgTable(
 
 export type ReferralRewardAllocation = typeof referralRewardAllocations.$inferSelect;
 export type NewReferralRewardAllocation = typeof referralRewardAllocations.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Reconciliation Reports & Discrepancies
+// ---------------------------------------------------------------------------
+
+export const reconciliationReports = pgTable(
+  "reconciliation_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    fingerprint: text("fingerprint").notNull().unique(),
+    status: text("status").notNull().default("ok"),
+    since: timestamp("since", { withTimezone: true }),
+    until: timestamp("until", { withTimezone: true }),
+    totalKeys: integer("total_keys").notNull().default(0),
+    matchedKeys: integer("matched_keys").notNull().default(0),
+    unmatchedKeys: integer("unmatched_keys").notNull().default(0),
+    discrepancyCount: integer("discrepancy_count").notNull().default(0),
+    summary: jsonb("summary").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    reconciliationReportsCreatedAtIdIdx: index(
+      "reconciliation_reports_created_at_id_idx",
+    ).on(t.createdAt, t.id),
+  }),
+);
+
+export type ReconciliationReport = typeof reconciliationReports.$inferSelect;
+export type NewReconciliationReport = typeof reconciliationReports.$inferInsert;
+
+export const reconciliationDiscrepancies = pgTable(
+  "reconciliation_discrepancies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportId: uuid("report_id")
+      .notNull()
+      .references(() => reconciliationReports.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    stellarAddress: text("stellar_address"),
+    marketId: text("market_id").notNull(),
+    predictionId: uuid("prediction_id"),
+    claimId: uuid("claim_id"),
+    txHash: text("tx_hash"),
+    dbAmount: text("db_amount"),
+    onChainAmount: text("on_chain_amount"),
+    difference: text("difference"),
+    details: jsonb("details").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    reconciliationDiscrepanciesReportIdIdx: index(
+      "reconciliation_discrepancies_report_id_idx",
+    ).on(t.reportId),
+    reconciliationDiscrepanciesKindIdx: index(
+      "reconciliation_discrepancies_kind_idx",
+    ).on(t.kind),
+    reconciliationDiscrepanciesReportKindIdx: index(
+      "reconciliation_discrepancies_report_kind_idx",
+    ).on(t.reportId, t.kind),
+  }),
+);
+
+export type ReconciliationDiscrepancyRow = typeof reconciliationDiscrepancies.$inferSelect;
+export type NewReconciliationDiscrepancyRow = typeof reconciliationDiscrepancies.$inferInsert;
+

@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from "uuid";
 import { Worker, Job } from "bullmq";
 import {
   performReconciliation,
@@ -5,6 +6,8 @@ import {
 } from "../services/reconciliationService";
 import { logger } from "../config/logger";
 import { redisConnection, reconciliationQueueName } from "../queue";
+import { reconciliationDiscrepanciesTotal } from "../metrics/registry";
+import { createAuditLog } from "../services/auditService";
 
 export interface ReconciliationJobPayload {
   type: "global" | "market";
@@ -42,9 +45,28 @@ export class ReconciliationWorker {
         if (data.type === "global") {
           const result = await performReconciliation();
           logger.info(
-            { jobId: job.id },
+            { jobId: job.id, status: result.status, discrepancyCount: result.discrepancyCount },
             "reconciliation: global reconciliation completed",
           );
+
+          if (result.status === "discrepancies_found" && result.discrepancies?.length > 0) {
+            for (const d of result.discrepancies) {
+              reconciliationDiscrepanciesTotal.inc({ kind: d.kind });
+            }
+            await createAuditLog({
+              action: "reconciliation.discrepancies_found",
+              walletAddress: "system",
+              ip: "127.0.0.1",
+              correlationId: job.id ?? uuidv4(),
+              metadata: {
+                reportId: result.reportId,
+                fingerprint: result.fingerprint,
+                discrepancyCount: result.discrepancyCount,
+                summary: result.summary,
+              },
+            });
+          }
+
           return result;
         } else if (data.type === "market") {
           if (

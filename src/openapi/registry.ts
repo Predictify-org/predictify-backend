@@ -3991,6 +3991,140 @@ registry.registerPath({
   },
 });
 
+const PayoutDiscrepancySchema = z
+  .object({
+    kind: z.enum([
+      "claimed_on_chain_missing_in_db",
+      "db_paid_missing_on_chain",
+      "amount_mismatch",
+      "claim_for_losing_prediction",
+      "duplicate_on_chain_claim",
+      "stale_unclaimed",
+    ]),
+    userId: z.string().optional(),
+    stellarAddress: z.string().optional(),
+    marketId: z.string(),
+    predictionId: z.string().optional(),
+    claimId: z.string().optional(),
+    txHash: z.string().optional(),
+    dbAmount: z.string().optional(),
+    onChainAmount: z.string().optional(),
+    difference: z.string().optional(),
+    details: z.record(z.unknown()).optional(),
+  })
+  .openapi("PayoutDiscrepancy");
+
+const PayoutReconciliationReportItemSchema = z
+  .object({
+    reportId: z.string(),
+    fingerprint: z.string(),
+    status: z.enum(["ok", "discrepancies_found"]),
+    since: z.string().nullable(),
+    until: z.string().nullable(),
+    totalKeys: z.number().int(),
+    matchedKeys: z.number().int(),
+    unmatchedKeys: z.number().int(),
+    discrepancyCount: z.number().int(),
+    summary: z.record(z.number().int()),
+    createdAt: z.string(),
+  })
+  .openapi("PayoutReconciliationReportItem");
+
+const PayoutReconciliationReportDetailSchema = PayoutReconciliationReportItemSchema.extend({
+  discrepancies: z.array(PayoutDiscrepancySchema),
+}).openapi("PayoutReconciliationReportDetail");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin/recon/reports",
+  operationId: "adminListReconciliationReports",
+  tags: ["Admin"],
+  summary: "List payout reconciliation reports (admin only)",
+  description:
+    "Lists persisted payout reconciliation reports with keyset pagination. " +
+    "Access is restricted to admins with REPORT_READ scope.",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      limit: z.string().optional().describe("Number of reports to return (max 100)"),
+      cursor: z.string().optional().describe("Keyset pagination cursor"),
+      since: z.string().optional().describe("ISO datetime lower bound"),
+      until: z.string().optional().describe("ISO datetime upper bound"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "List of reconciliation reports",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: z.array(PayoutReconciliationReportItemSchema),
+            meta: z.object({
+              nextCursor: z.string().nullable(),
+              limit: z.number().int(),
+            }),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Validation error — invalid query parameters",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    403: {
+      description: "Forbidden — missing or non-admin JWT",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin/recon/reports/{id}",
+  operationId: "adminGetReconciliationReport",
+  tags: ["Admin"],
+  summary: "Get payout reconciliation report details (admin only)",
+  description:
+    "Retrieves a persisted payout reconciliation report and all of its discrepancies. " +
+    "Access is restricted to admins with REPORT_READ scope.",
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ id: z.string().describe("Report ID") }),
+  },
+  responses: {
+    200: {
+      description: "Reconciliation report detail",
+      content: {
+        "application/json": {
+          schema: z.object({
+            data: PayoutReconciliationReportDetailSchema,
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Validation error — invalid report ID",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    403: {
+      description: "Forbidden — missing or non-admin JWT",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    404: {
+      description: "Report not found",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
 // ── /api/webhooks ─────────────────────────────────────────────────────────────
 
 const DeliveryStatus = z

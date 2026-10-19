@@ -6,12 +6,24 @@ import { errorHandler } from "../src/middleware/errorHandler";
 
 jest.mock("../src/services/reconciliationService", () => ({
   reconcileMarket: jest.fn(),
+  getReconciliationReport: jest.fn(),
+  listReconciliationReports: jest.fn(),
 }));
 
-import { reconcileMarket } from "../src/services/reconciliationService";
+import {
+  reconcileMarket,
+  getReconciliationReport,
+  listReconciliationReports,
+} from "../src/services/reconciliationService";
 
 const mockReconcileMarket = reconcileMarket as jest.MockedFunction<
   typeof reconcileMarket
+>;
+const mockGetReconciliationReport = getReconciliationReport as jest.MockedFunction<
+  typeof getReconciliationReport
+>;
+const mockListReconciliationReports = listReconciliationReports as jest.MockedFunction<
+  typeof listReconciliationReports
 >;
 
 const SECRET = process.env.JWT_SECRET!;
@@ -320,3 +332,92 @@ describe("GET /api/admin/recon/markets/:id", () => {
     expect(mockReconcileMarket).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/admin/recon/reports", () => {
+  it("returns 403 when not authenticated or not admin", async () => {
+    const res = await request(makeApp()).get("/api/admin/recon/reports");
+    expect(res.status).toBe(403);
+  });
+
+  it("returns paginated list of reports for admin", async () => {
+    mockListReconciliationReports.mockResolvedValue({
+      reports: [
+        {
+          reportId: "rep-1",
+          fingerprint: "fp-1",
+          status: "ok",
+          since: null,
+          until: null,
+          totalKeys: 10,
+          matchedKeys: 10,
+          unmatchedKeys: 0,
+          discrepancyCount: 0,
+          summary: {},
+          createdAt: "2026-06-27T12:00:00.000Z",
+        },
+      ],
+      nextCursor: "next-cursor",
+    } as any);
+
+    const res = await request(makeApp())
+      .get("/api/admin/recon/reports?limit=10")
+      .set("Authorization", `Bearer ${signJwt({ sub: ADMIN_ADDRESS, role: "admin" })}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta.nextCursor).toBe("next-cursor");
+    expect(res.body.meta.limit).toBe(10);
+  });
+
+  it("returns 422/400 on invalid query params", async () => {
+    const res = await request(makeApp())
+      .get("/api/admin/recon/reports?limit=invalid")
+      .set("Authorization", `Bearer ${signJwt({ sub: ADMIN_ADDRESS, role: "admin" })}`);
+
+    expect([400, 422]).toContain(res.status);
+  });
+});
+
+describe("GET /api/admin/recon/reports/:id", () => {
+  it("returns 403 when not authenticated or not admin", async () => {
+    const res = await request(makeApp()).get("/api/admin/recon/reports/rep-1");
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when report not found", async () => {
+    mockGetReconciliationReport.mockResolvedValue(null);
+
+    const res = await request(makeApp())
+      .get("/api/admin/recon/reports/missing-report")
+      .set("Authorization", `Bearer ${signJwt({ sub: ADMIN_ADDRESS, role: "admin" })}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns report detail for admin", async () => {
+    const mockDetail = {
+      reportId: "rep-1",
+      fingerprint: "fp-1",
+      status: "ok",
+      since: null,
+      until: null,
+      totalKeys: 10,
+      matchedKeys: 10,
+      unmatchedKeys: 0,
+      discrepancyCount: 0,
+      summary: {},
+      discrepancies: [],
+      createdAt: "2026-06-27T12:00:00.000Z",
+    };
+    mockGetReconciliationReport.mockResolvedValue(mockDetail as any);
+
+    const res = await request(makeApp())
+      .get("/api/admin/recon/reports/rep-1")
+      .set("Authorization", `Bearer ${signJwt({ sub: ADMIN_ADDRESS, role: "admin" })}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.reportId).toBe("rep-1");
+    expect(res.body.data.discrepancies).toEqual([]);
+  });
+});
+

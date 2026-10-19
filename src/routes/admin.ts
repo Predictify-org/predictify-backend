@@ -45,6 +45,8 @@ export const defaultAdminRouteItems: readonly AdminRouteItem[] = [
   { id: "GET /api/admin/rate-limit/inspect/{address}", method: "GET", path: "/api/admin/rate-limit/inspect/{address}", summary: "Inspect rate limit usage" },
   { id: "POST /api/admin/reindex", method: "POST", path: "/api/admin/reindex", summary: "Trigger a reindex run" },
   { id: "GET /api/admin/recon/markets/{id}", method: "GET", path: "/api/admin/recon/markets/{id}", summary: "Read reconciliation details" },
+  { id: "GET /api/admin/recon/reports", method: "GET", path: "/api/admin/recon/reports", summary: "List reconciliation reports" },
+  { id: "GET /api/admin/recon/reports/{id}", method: "GET", path: "/api/admin/recon/reports/{id}", summary: "Read reconciliation report details" },
   { id: "GET /api/admin/schema-versions", method: "GET", path: "/api/admin/schema-versions", summary: "List schema versions" },
   { id: "GET /api/admin/schema-versions/latest", method: "GET", path: "/api/admin/schema-versions/latest", summary: "Read the latest schema version" },
   { id: "GET /api/admin/users/{address}", method: "GET", path: "/api/admin/users/{address}", summary: "Read an admin user view" },

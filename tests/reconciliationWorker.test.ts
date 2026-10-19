@@ -23,9 +23,19 @@ jest.mock("../src/services/reconciliationService", () => ({
   performReconciliation: jest.fn(),
   reconcileMarket: jest.fn(),
 }));
+jest.mock("../src/services/auditService", () => ({
+  createAuditLog: jest.fn().mockResolvedValue({ id: "audit-1" }),
+}));
+jest.mock("../src/metrics/registry", () => ({
+  reconciliationDiscrepanciesTotal: {
+    inc: jest.fn(),
+  },
+}));
 
 import { ReconciliationWorker, ReconciliationJobPayload } from "../src/workers/reconciliationWorker";
 import { performReconciliation, reconcileMarket } from "../src/services/reconciliationService";
+import { createAuditLog } from "../src/services/auditService";
+import { reconciliationDiscrepanciesTotal } from "../src/metrics/registry";
 import { Worker } from "bullmq";
 
 describe("ReconciliationWorker", () => {
@@ -59,6 +69,48 @@ describe("ReconciliationWorker", () => {
     const result = await workerCallback({ id: "job-global", data: { type: "global" } });
     expect(performReconciliation).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ skipped: true });
+  });
+
+  it("completes global job with status discrepancies_found, increments metrics and creates audit row", async () => {
+    const worker = new ReconciliationWorker(1);
+    worker.start();
+
+    const mockReport = {
+      reportId: "rep-1",
+      fingerprint: "fp-1",
+      status: "discrepancies_found",
+      totalKeys: 2,
+      matchedKeys: 1,
+      unmatchedKeys: 1,
+      discrepancyCount: 1,
+      summary: { claimed_on_chain_missing_in_db: 1 },
+      discrepancies: [
+        {
+          kind: "claimed_on_chain_missing_in_db",
+          marketId: "market-1",
+          stellarAddress: "user-1",
+        },
+      ],
+    };
+    (performReconciliation as jest.Mock).mockResolvedValue(mockReport);
+
+    expect(workerCallback).toBeDefined();
+    const result = await workerCallback({ id: "job-global-disc", data: { type: "global" } });
+    expect(performReconciliation).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("discrepancies_found");
+    expect(reconciliationDiscrepanciesTotal.inc).toHaveBeenCalledWith({
+      kind: "claimed_on_chain_missing_in_db",
+    });
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "reconciliation.discrepancies_found",
+        metadata: expect.objectContaining({
+          reportId: "rep-1",
+          fingerprint: "fp-1",
+          discrepancyCount: 1,
+        }),
+      }),
+    );
   });
 
   it("runs market reconciliation when job type is market", async () => {
