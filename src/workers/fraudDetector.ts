@@ -15,6 +15,7 @@
 
 import { randomUUID } from "crypto";
 import { logger } from "../config/logger";
+import { closeDb } from "../db/client";
 import {
   DrizzleFraudRepo,
   type FraudRepo,
@@ -26,6 +27,8 @@ import {
 export class FraudDetectorWorker {
   private readonly repo: FraudRepo;
   private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private shuttingDown = false;
 
   constructor(repo: FraudRepo = new DrizzleFraudRepo()) {
     this.repo = repo;
@@ -33,6 +36,12 @@ export class FraudDetectorWorker {
 
   /** Run a single scan. Errors are caught and logged — the worker never throws. */
   async runOnce(opts: RunScanOptions = {}): Promise<RunScanResult | null> {
+    if (this.shuttingDown) return null;
+    if (this.running) {
+      logger.warn("fraud_detector: scan already in progress, skipping overlap");
+      return null;
+    }
+    this.running = true;
     const correlationId = opts.correlationId ?? randomUUID();
     const merged: RunScanOptions = { ...opts };
     merged.correlationId = correlationId;
@@ -46,6 +55,8 @@ export class FraudDetectorWorker {
         "fraud_detector: run failed",
       );
       return null;
+    } finally {
+      this.running = false;
     }
   }
 
@@ -57,6 +68,9 @@ export class FraudDetectorWorker {
     if (this.timer) {
       logger.warn("fraud_detector: already running, ignoring start()");
       return () => this.stop();
+    }
+    if (this.shuttingDown) {
+      return () => undefined;
     }
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
       logger.warn(
@@ -77,6 +91,7 @@ export class FraudDetectorWorker {
   }
 
   stop(): void {
+    this.shuttingDown = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -88,18 +103,61 @@ export class FraudDetectorWorker {
 /** Singleton for production wiring. */
 export const fraudDetectorWorker = new FraudDetectorWorker();
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function shutdownWithTimeout(timeoutMs = 10_000): Promise<void> {
+  const timeout = sleep(timeoutMs);
+  const cleanup = (async () => {
+    try {
+      await closeDb();
+    } catch (err) {
+      logger.warn({ err }, "fraud_detector: failed to close db");
+    }
+  })();
+  await Promise.race([cleanup, timeout]);
+}
+
+async function main(): Promise<void> {
+  const worker = fraudDetectorWorker;
+  const stopSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  let shutting = false;
+
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shutting) return;
+    shutting = true;
+    logger.info({ signal }, "fraud_detector: shutdown requested");
+    worker.stop();
+    void shutdownWithTimeout()
+      .finally(() => process.exit(0))
+      .catch(() => process.exit(0));
+  };
+
+  for (const signal of stopSignals) {
+    process.once(signal, shutdown);
+  }
+
+  const intervalMs = Number.parseInt(process.env.FRAUD_DETECTOR_INTERVAL_MS ?? "", 10);
+  const opts: RunScanOptions = {};
+
+  if (Number.isFinite(intervalMs) && intervalMs > 0) {
+    worker.start(intervalMs, opts);
+    // Keep the process alive for the scheduler
+    await new Promise<void>(() => undefined);
+    return;
+  }
+
+  // One-off run (e.g. `node dist/workers/fraudDetector.js`)
+  const res = await worker.runOnce(opts);
+  console.log("fraud_scan", res);
+  await shutdownWithTimeout(5000);
+}
+
 // Allow `node dist/workers/fraudDetector.js` for ad-hoc runs.
 if (require.main === module) {
-  fraudDetectorWorker
-    .runOnce()
-    .then((res) => {
-       
-      console.log("fraud_scan", res);
-      process.exit(0);
-    })
-    .catch((err) => {
-       
-      console.error(err);
-      process.exit(1);
-    });
+  main().catch((err) => {
+    console.error(err);
+    void shutdownWithTimeout(2000).finally(() => process.exit(1));
+  });
 }

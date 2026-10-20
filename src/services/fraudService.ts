@@ -34,7 +34,8 @@
  *   across the worker → service → repo boundary.
  */
 
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { createHash } from "crypto";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { fraudFlags, predictions, users } from "../db/schema";
 import { logger } from "../config/logger";
@@ -120,6 +121,8 @@ export interface FraudFlagDTO {
   status: string;
   reviewedBy: string | null;
   reviewedAt: Date | null;
+  /** Prior flag this row's dismissal was carried forward from (if any). */
+  carriedFrom: string | null;
   correlationId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -130,6 +133,18 @@ export interface ListFlagsFilters {
   limit?: number;
 }
 
+export type FraudFlagStatus = "open" | "confirmed" | "dismissed";
+
+/** Reviewer transition applied to a flag (see admin PATCH endpoint). */
+export interface FraudFlagTransition {
+  id: string;
+  expectedStatus: FraudFlagStatus;
+  status: FraudFlagStatus;
+  reviewedBy: string;
+  /** Stored in the audit trail only — never persisted on the flag row. */
+  note?: string;
+}
+
 export interface FraudRepo {
   loadRecentPredictions(opts: {
     since: Date;
@@ -137,6 +152,16 @@ export interface FraudRepo {
   }): Promise<PredictionRow[]>;
   upsertFlags(rows: FlagWriteInput[]): Promise<number>;
   listFlags(filters: ListFlagsFilters): Promise<FraudFlagDTO[]>;
+  /** Single flag by id, or null when it does not exist. */
+  getFlag(id: string): Promise<FraudFlagDTO | null>;
+  /**
+   * Optimistically transitions a flag: updates only when the current status
+   * still equals `expectedStatus`. Returns null when the row is missing or
+   * was concurrently changed by another reviewer.
+   */
+  transitionFlag(
+    transition: FraudFlagTransition,
+  ): Promise<FraudFlagDTO | null>;
 }
 
 // Edge weights — feed into both the cluster `score` and the per-row score.
@@ -221,9 +246,67 @@ function orderedPair(x: string, y: string): [string, string] {
   return x < y ? [x, y] : [y, x];
 }
 
-/** Stable cluster key — sorted member addresses joined by `|`. */
+/**
+ * Stable cluster key — SHA-256 over the sorted member addresses joined by
+ * `|`. Content-addressed, so the key only changes when the cluster's
+ * membership changes (legacy pipe-joined keys stay valid as `carried_from`
+ * lineage anchors, but new writes always use the hash).
+ */
 export function makeClusterKey(members: string[]): string {
-  return [...members].sort().join("|");
+  const normalized = [...members].sort().join("|");
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+/**
+ * Reason codes represented in a stored flag's evidence. Prefers the
+ * aggregated `edgeReasonCounts` keys and falls back to the per-edge
+ * `reason` values on older payloads.
+ */
+export function evidenceReasons(evidence: unknown): Set<string> {
+  const ev = (evidence ?? {}) as Record<string, unknown>;
+  const counts = ev.edgeReasonCounts;
+  if (counts && typeof counts === "object" && !Array.isArray(counts)) {
+    const keys = Object.keys(counts as Record<string, unknown>).filter(Boolean);
+    if (keys.length > 0) return new Set(keys);
+  }
+  const edges = ev.edges;
+  if (Array.isArray(edges)) {
+    const out = new Set<string>();
+    for (const edge of edges) {
+      const reason = (edge as { reason?: unknown } | null)?.reason;
+      if (typeof reason === "string" && reason.length > 0) out.add(reason);
+    }
+    if (out.size > 0) return out;
+  }
+  return new Set<string>();
+}
+
+export interface CarryDecision {
+  status: "open" | "dismissed";
+  carriedFrom: string | null;
+}
+
+/**
+ * Decide the status for a freshly detected finding.
+ *
+ * A prior dismissal for the same user is carried forward only when every
+ * reason in the new evidence was already part of the dismissed finding —
+ * i.e. the detector merely re-observed what the reviewer cleared. Any
+ * genuinely new reason (or unparseable evidence) reopens the flag.
+ */
+export function resolveCarryDecision(
+  rowEvidence: unknown,
+  priorDismissal: { id: string; evidence: unknown } | null | undefined,
+): CarryDecision {
+  if (!priorDismissal) return { status: "open", carriedFrom: null };
+  const prior = evidenceReasons(priorDismissal.evidence);
+  const next = evidenceReasons(rowEvidence);
+  if (prior.size === 0 || next.size === 0) {
+    return { status: "open", carriedFrom: null };
+  }
+  const carried = [...next].every((reason) => prior.has(reason));
+  if (!carried) return { status: "open", carriedFrom: null };
+  return { status: "dismissed", carriedFrom: priorDismissal.id };
 }
 
 /**
@@ -493,17 +576,51 @@ export class DrizzleFraudRepo implements FraudRepo {
 
   async upsertFlags(rows: FlagWriteInput[]): Promise<number> {
     if (rows.length === 0) return 0;
+
+    // Look up each user's most recent dismissal so a re-detected finding can
+    // inherit it instead of re-surfacing for review. Ordered desc, so the
+    // first row seen per user wins.
+    const userIds = [...new Set(rows.map((r) => r.userId))].filter(Boolean);
+    const priorDismissals = new Map<string, FraudFlagDTO>();
+    if (userIds.length > 0) {
+      const dismissed = await this.db
+        .select()
+        .from(fraudFlags)
+        .where(
+          and(
+            inArray(fraudFlags.userId, userIds),
+            eq(fraudFlags.status, "dismissed"),
+          ),
+        )
+        .orderBy(desc(fraudFlags.updatedAt), desc(fraudFlags.createdAt));
+      for (const flag of (dismissed ?? []) as FraudFlagDTO[]) {
+        if (!priorDismissals.has(flag.userId)) {
+          priorDismissals.set(flag.userId, flag);
+        }
+      }
+    }
+
     // ON CONFLICT (cluster_key, user_id) DO UPDATE — keep latest evidence
-    // and score, never decrement reviewer state.
-    const values = rows.map((r) => ({
-      clusterKey: r.clusterKey,
-      userId: r.userId,
-      stellarAddress: r.stellarAddress,
-      reason: r.reason,
-      score: r.score,
-      evidence: r.evidence,
-      correlationId: r.correlationId ?? null,
-    }));
+    // and score, never decrement reviewer state (status / reviewedBy /
+    // reviewedAt / carriedFrom are deliberately untouched, which also makes
+    // re-running a scan idempotent for already-reviewed findings).
+    const values = rows.map((r) => {
+      const carry = resolveCarryDecision(
+        r.evidence,
+        priorDismissals.get(r.userId) ?? null,
+      );
+      return {
+        clusterKey: r.clusterKey,
+        userId: r.userId,
+        stellarAddress: r.stellarAddress,
+        reason: r.reason,
+        score: r.score,
+        evidence: r.evidence,
+        correlationId: r.correlationId ?? null,
+        status: carry.status,
+        carriedFrom: carry.carriedFrom,
+      };
+    });
     const result = await this.db
       .insert(fraudFlags)
       .values(values)
@@ -534,7 +651,52 @@ export class DrizzleFraudRepo implements FraudRepo {
       .limit(limit);
     return rows as FraudFlagDTO[];
   }
+
+  async getFlag(id: string): Promise<FraudFlagDTO | null> {
+    if (!isUuid(id)) return null;
+    const rows = await this.db
+      .select()
+      .from(fraudFlags)
+      .where(eq(fraudFlags.id, id))
+      .limit(1);
+    const row = Array.isArray(rows) ? rows[0] : undefined;
+    return (row as FraudFlagDTO | undefined) ?? null;
+  }
+
+  async transitionFlag(
+    transition: FraudFlagTransition,
+  ): Promise<FraudFlagDTO | null> {
+    if (!isUuid(transition.id)) return null;
+    const now = new Date();
+    // Conditional update — the status predicate makes concurrent reviewer
+    // decisions race safely: the loser matches 0 rows and sees a conflict.
+    const rows = await this.db
+      .update(fraudFlags)
+      .set({
+        status: transition.status,
+        reviewedBy: transition.reviewedBy,
+        reviewedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(fraudFlags.id, transition.id),
+          eq(fraudFlags.status, transition.expectedStatus),
+        ),
+      )
+      .returning();
+    const row = Array.isArray(rows) ? rows[0] : undefined;
+    return (row as FraudFlagDTO | undefined) ?? null;
+  }
 }
+
+/** Postgres rejects malformed uuids outright — fail soft so callers see 404. */
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /** Convenience: list flags for the admin endpoint. */
 export async function listFraudFlags(

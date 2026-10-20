@@ -36,6 +36,7 @@ import { devicesRouter } from "./routes/devices";
 import { devicesRevokeRouter } from "./routes/devicesRevoke";
 import { featureFlagsRouter } from "./routes/feature-flags";
 import { adminFeatureFlagsRouter } from "./routes/admin/featureFlags";
+import { adminFraudRouter } from "./routes/admin/fraud";
 import { adminUsersRouter } from "./routes/adminUsers";
 import { adminNotesRouter } from "./routes/admin/users/notes";
 import { adminImpersonateRouter } from "./routes/admin/users/impersonate";
@@ -223,6 +224,7 @@ export function createApp(_options: CreateAppOptions = {}): express.Express {
   app.use("/api/admin/users", adminNotesRouter);
   app.use("/api/feature-flags", featureFlagsRouter);
   app.use("/api/admin/feature-flags", adminFeatureFlagsRouter);
+  app.use("/api/admin/fraud", adminFraudRouter);
   app.use("/api/admin/markets", adminMarketsRouter);
   app.use("/api/admin/schema-versions", adminSchemaVersionsRouter);
   app.use("/api/admin/rate-limit", adminRateLimitInspectRouter);

@@ -9,6 +9,7 @@ import {
   jsonb,
   index,
   primaryKey,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable(
@@ -235,6 +236,11 @@ export const fraudFlags = pgTable(
     status: text("status").notNull().default("open"),
     reviewedBy: text("reviewed_by"),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    /** Prior flag whose dismissal was carried forward onto this row. */
+    carriedFrom: uuid("carried_from").references(
+      (): AnyPgColumn => fraudFlags.id,
+      { onDelete: "set null" },
+    ),
     correlationId: text("correlation_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
