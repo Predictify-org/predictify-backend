@@ -1,4 +1,4 @@
-import { rpc } from "@stellar/stellar-sdk";
+import { rpc, type xdr } from "@stellar/stellar-sdk";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { getPool } from "../db/client";
@@ -9,8 +9,11 @@ import {
   type DecodedEventIdentity,
   type RecoveryEvent,
 } from "./indexerRecovery";
+import { decodePredictifyEvent, eventDataOf } from "../indexer/eventDecoder";
 import {
+  indexerEventsDecodedTotal,
   indexerEventsInsertedTotal,
+  indexerEventsInvalidTotal,
   indexerReorgsDetectedTotal,
 } from "../metrics/registry";
 
@@ -31,6 +34,7 @@ export interface IndexerEventInput {
   opIndex: number;
   eventIndex?: number;
   eventType?: string;
+  /** Market the event is scoped to (set for decoded market-scoped events). */
   marketId?: string | null;
   payload?: unknown;
 }
@@ -61,6 +65,57 @@ export function extractMarketId(event: IndexerEventInput): string | null {
     if (typeof p.market_id === "string") return p.market_id;
   }
   return null;
+}
+
+/** The subset of an RPC `EventResponse` that mapRpcEvent reads. */
+export interface RpcEventLike {
+  id: string;
+  type: string;
+  ledger: number;
+  txHash: string;
+  contractId?: { contractId(): string } | null;
+  topic: ReadonlyArray<xdr.ScVal>;
+  value: xdr.ScVal;
+}
+
+/**
+ * Turn one RPC event into an indexer row, or null when it must not be
+ * persisted (not a `contract` event, or emitted by another contract).
+ * Unknown and invalid topics are kept with their raw XDR; nothing throws.
+ */
+export function mapRpcEvent(
+  event: RpcEventLike,
+  contractId: string,
+  fallbackIndex: number,
+): IndexerEventInput | null {
+  if (event.type !== "contract") {
+    return null;
+  }
+  if (event.contractId && event.contractId.contractId() !== contractId) {
+    return null;
+  }
+
+  const decoded = decodePredictifyEvent({ topic: event.topic, value: event.value });
+  if (decoded.status === "decoded") {
+    indexerEventsDecodedTotal.inc({ event_type: decoded.eventType });
+  } else if (decoded.status === "unknown") {
+    indexerEventsDecodedTotal.inc({ event_type: "unknown" });
+  } else {
+    indexerEventsInvalidTotal.inc({ event_type: decoded.eventType.slice("invalid:".length) });
+    logger.warn(
+      { txHash: event.txHash, ledger: event.ledger, eventType: decoded.eventType, errors: decoded.errors },
+      "indexer: contract event failed validation; stored as invalid",
+    );
+  }
+
+  return {
+    ledger: event.ledger,
+    txHash: event.txHash,
+    opIndex: parseEventOpIndex(event.id, fallbackIndex),
+    eventType: decoded.eventType,
+    marketId: decoded.marketId,
+    payload: eventDataOf(decoded),
+  };
 }
 
 export function createSorobanRpcClient(): SorobanRpcClient {
@@ -98,24 +153,24 @@ export function createSorobanRpcClient(): SorobanRpcClient {
             return collected;
           }
           if (event.ledger >= startLedger) {
-            const decoded = decodeEventId(event.id);
-            if (!decoded) {
+            const decodedId = decodeEventId(event.id);
+            if (!decodedId) {
               logger.warn(
                 { eventId: event.id, txHash: event.txHash, ledger: event.ledger },
                 "indexer skipping event with malformed event id",
               );
               continue;
             }
-            collected.push({
-              id: event.id,
-              ledger: event.ledger,
-              txHash: event.txHash,
-              txApplicationOrder: decoded.txApplicationOrder,
-              opIndex: decoded.opIndex,
-              eventIndex: decoded.eventIndex,
-              eventType: event.type,
-              payload: event.value,
-            });
+            const mapped = mapRpcEvent(event, env.PREDICTIFY_CONTRACT_ID, decodedId.opIndex);
+            if (mapped) {
+              collected.push({
+                ...mapped,
+                id: event.id,
+                txApplicationOrder: decodedId.txApplicationOrder,
+                opIndex: decodedId.opIndex,
+                eventIndex: decodedId.eventIndex,
+              });
+            }
           }
         }
 

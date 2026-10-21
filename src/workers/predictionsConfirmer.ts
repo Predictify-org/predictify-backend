@@ -2,14 +2,17 @@
  * predictionsConfirmer.ts
  *
  * Background worker that transitions pending predictions to confirmed (or
- * failed) by joining against indexer_events on txHash.
+ * failed) by joining against indexer_events.
  *
- * After the indexer ingests a bet_placed event, the corresponding pending row
+ * After the indexer ingests a bet_plc event, the corresponding pending row
  * in predictions must transition to confirmed.  This worker:
  *
  *  1. Polls on a configurable interval (PREDICTION_CONFIRM_INTERVAL_MS).
- *  2. Finds pending predictions where a matching indexer_event exists (same
- *     txHash) and batch-updates them to "confirmed".
+ *  2. Finds pending predictions where a matching indexer_event exists and
+ *     batch-updates them to "confirmed".  An event matches only when it is a
+ *     canonical `bet_plc` event in the prediction's tx whose market_id equals
+ *     the prediction's market and whose bettor equals the user's address
+ *     (see `confirmingEventExists`).  Unknown/invalid/other events never count.
  *  3. For unmatched pending predictions, increments `confirmAttempts`.  After
  *     MAX_CONFIRM_ATTEMPTS (default 3) the row transitions to "failed" with a
  *     descriptive lastError.
@@ -26,7 +29,7 @@
  *  • The webhook emitter is injected as a constructor dependency so unit
  *    tests can mock the webhook path without module-level imports.
  *  • The repo uses DISTINCT when joining indexer_events to guard against
- *    duplicate prediction IDs when a txHash has multiple event rows.
+ *    duplicate prediction IDs when a txHash has multiple bet_plc rows.
  *  • The worker is structured as an injectable service class (for unit tests)
  *    and a standalone main() entry point (for production).
  */
@@ -37,7 +40,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { pool } from "../db/client";
-import { predictions, indexerEvents, markets } from "../db/schema";
+import { predictions, indexerEvents, markets, users } from "../db/schema";
 import type { Db } from "../db";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -81,8 +84,9 @@ export const defaultWebhookEmitter: WebhookEmitter = async (
  */
 export interface PredictionsConfirmerRepo {
   /**
-   * Returns the unique IDs of pending predictions that have a matching txHash
-   * in indexer_events.  These should be transitioned to "confirmed".
+   * Returns the unique IDs of pending predictions that have a matching
+   * canonical bet_plc event in indexer_events (same txHash, market and
+   * bettor).  These should be transitioned to "confirmed".
    * Uses DISTINCT to avoid duplicates when a txHash has multiple event rows.
    */
   findConfirmedCandidateIds(batchSize: number): Promise<string[]>;
@@ -264,6 +268,30 @@ export class PredictionsConfirmerService {
 
 // ─── Drizzle repository ────────────────────────────────────────────────────
 
+/** Topic symbol of the bet-placed event (events.rs: `bet_plc`). */
+export const BET_PLACED_EVENT_TYPE = "bet_plc";
+
+/**
+ * Predicate that is true when `indexer_events` holds the on-chain event
+ * confirming a prediction: a canonical `bet_plc` row in the prediction's
+ * transaction, for the prediction's market, placed by the prediction's user.
+ * The bettor is compared with the user's Stellar address (`data->>'bettor'`
+ * is a strkey string written by the event decoder).
+ */
+function confirmingEventExists() {
+  return sql`EXISTS (
+    SELECT 1 FROM ${indexerEvents}
+    WHERE ${indexerEvents.txHash} = ${predictions.txHash}
+      AND ${indexerEvents.eventType} = ${BET_PLACED_EVENT_TYPE}
+      AND ${indexerEvents.canonical} = TRUE
+      AND ${indexerEvents.marketId} = ${predictions.marketId}
+      AND ${indexerEvents.data}->>'bettor' = (
+        SELECT ${users.stellarAddress} FROM ${users}
+        WHERE ${users.id} = ${predictions.userId}
+      )
+  )`;
+}
+
 /**
  * Production implementation of PredictionsConfirmerRepo backed by Drizzle ORM.
  * All three batch mutations run inside a single Drizzle transaction so partial
@@ -277,19 +305,16 @@ export class DrizzlePredictionsConfirmerRepo implements PredictionsConfirmerRepo
   }
 
   async findConfirmedCandidateIds(batchSize: number): Promise<string[]> {
-    // DISTINCT ensures a prediction ID appears at most once even when its
-    // txHash has multiple indexer_event rows (different op_index values).
+    // Only a canonical bet_plc event for this prediction's market and bettor
+    // confirms it; unknown:*, invalid:* and other topics in the same tx do not.
     const rows = await this.db
       .selectDistinct({ id: predictions.id })
       .from(predictions)
-      .innerJoin(
-        indexerEvents,
-        eq(predictions.txHash, indexerEvents.txHash),
-      )
       .where(
         and(
           eq(predictions.status, "pending"),
           sql`${predictions.txHash} != ''`,
+          confirmingEventExists(),
         ),
       )
       .limit(batchSize);
@@ -348,10 +373,7 @@ export class DrizzlePredictionsConfirmerRepo implements PredictionsConfirmerRepo
           eq(predictions.status, "pending"),
           sql`${predictions.txHash} != ''`,
           sql`${predictions.confirmAttempts} < ${maxAttempts}`,
-          sql`NOT EXISTS (
-            SELECT 1 FROM ${indexerEvents}
-            WHERE ${indexerEvents.txHash} = ${predictions.txHash}
-          )`,
+          sql`NOT ${confirmingEventExists()}`,
         ),
       );
 
@@ -366,17 +388,14 @@ export class DrizzlePredictionsConfirmerRepo implements PredictionsConfirmerRepo
       .update(predictions)
       .set({
         status: "failed",
-        lastError: `No matching indexer event found after ${maxAttempts} attempts`,
+        lastError: `No matching bet_plc indexer event found after ${maxAttempts} attempts`,
       })
       .where(
         and(
           eq(predictions.status, "pending"),
           sql`${predictions.txHash} != ''`,
           sql`${predictions.confirmAttempts} >= ${maxAttempts}`,
-          sql`NOT EXISTS (
-            SELECT 1 FROM ${indexerEvents}
-            WHERE ${indexerEvents.txHash} = ${predictions.txHash}
-          )`,
+          sql`NOT ${confirmingEventExists()}`,
         ),
       )
       .returning({ id: predictions.id });
