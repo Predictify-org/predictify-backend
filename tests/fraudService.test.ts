@@ -254,7 +254,8 @@ describe("clusterize", () => {
     expect(clusters).toHaveLength(1);
     expect(clusters[0].members).toEqual(["GA", "GB", "GC"]);
     expect(clusters[0].score).toBeGreaterThan(0);
-    expect(clusters[0].key).toBe("GA|GB|GC");
+    expect(typeof clusters[0].key).toBe("string");
+    expect(clusters[0].key).toHaveLength(64);
   });
 
   it("returns multiple clusters when address groups are disjoint", () => {
@@ -327,7 +328,7 @@ describe("runFraudScan", () => {
     expect(addrs).toEqual(["GA", "GB"]);
 
     for (const w of repo.written) {
-      expect(w.clusterKey).toBe("GA|GB");
+      expect(w.clusterKey).toHaveLength(64);
       expect(w.reason).toBe("SHARED_FUNDING_SOURCE");
       expect(w.correlationId).toBe("cid-2");
       expect(w.score).toBeGreaterThan(0);

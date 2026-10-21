@@ -781,6 +781,181 @@ components:
             $ref: '#/components/schemas/FeatureFlag'
       required:
         - data
+    FraudFlagEvidenceEdge:
+      type: object
+      properties:
+        a:
+          type: string
+        b:
+          type: string
+        reason:
+          type: string
+        detail:
+          type: string
+      required:
+        - a
+        - b
+        - reason
+        - detail
+    FraudFlagEvidence:
+      type: object
+      properties:
+        clusterSize:
+          type: integer
+        members:
+          type: array
+          items:
+            type: string
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/FraudFlagEvidenceEdge'
+        edgeReasonCounts:
+          type: object
+          additionalProperties:
+            type: integer
+    FraudFlagStatus:
+      type: string
+      enum:
+        - open
+        - dismissed
+        - confirmed
+    FraudFlag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        clusterKey:
+          type: string
+        userId:
+          type: string
+          format: uuid
+        stellarAddress:
+          type: string
+        reason:
+          type: string
+        evidence:
+          $ref: '#/components/schemas/FraudFlagEvidence'
+        score:
+          type: integer
+        status:
+          $ref: '#/components/schemas/FraudFlagStatus'
+        reviewedBy:
+          type: string
+          nullable: true
+        reviewedAt:
+          type: string
+          nullable: true
+          format: date-time
+        carriedFrom:
+          type: string
+          nullable: true
+          format: uuid
+        correlationId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - clusterKey
+        - userId
+        - stellarAddress
+        - reason
+        - evidence
+        - score
+        - status
+        - reviewedBy
+        - reviewedAt
+        - correlationId
+        - createdAt
+        - updatedAt
+    FraudFlagListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FraudFlag'
+        correlationId:
+          type: string
+      required:
+        - data
+        - correlationId
+    FraudScanResult:
+      type: object
+      properties:
+        scanned:
+          type: integer
+        edges:
+          type: integer
+        clusters:
+          type: integer
+        flagsWritten:
+          type: integer
+        correlationId:
+          type: string
+          nullable: true
+      required:
+        - scanned
+        - edges
+        - clusters
+        - flagsWritten
+        - correlationId
+    FraudScanResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/FraudScanResult'
+        correlationId:
+          type: string
+      required:
+        - data
+        - correlationId
+    FraudScanRequest:
+      type: object
+      properties:
+        lookbackMs:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 604800000
+        maxPredictions:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 100000
+      additionalProperties: false
+    FraudFlagResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/FraudFlag'
+        correlationId:
+          type: string
+      required:
+        - data
+        - correlationId
+    FraudFlagReviewRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - confirmed
+            - dismissed
+        note:
+          type: string
+          minLength: 1
+          maxLength: 4000
+      required:
+        - status
+      additionalProperties: false
     FeatureFlagResponse:
       type: object
       properties:
@@ -3463,6 +3638,168 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '409':
           description: Feature flag already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/fraud/flags:
+    get:
+      operationId: listAdminFraudFlags
+      tags:
+        - Admin
+      summary: List fraud flags for review
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - open
+              - dismissed
+              - confirmed
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: string
+            pattern: ^\d+$
+          required: false
+          name: limit
+          in: query
+      responses:
+        '200':
+          description: List of fraud flags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudFlagListResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/fraud/scan:
+    post:
+      operationId: runAdminFraudScan
+      tags:
+        - Admin
+      summary: Trigger a fraud cluster scan
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FraudScanRequest'
+      responses:
+        '200':
+          description: Scan summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudScanResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/fraud/flags/{id}:
+    patch:
+      operationId: reviewAdminFraudFlag
+      tags:
+        - Admin
+      summary: Review a fraud flag (confirm or dismiss)
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FraudFlagReviewRequest'
+      responses:
+        '200':
+          description: Flag reviewed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudFlagResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Fraud flag not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Invalid transition or concurrent modification
           content:
             application/json:
               schema:

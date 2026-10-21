@@ -1933,6 +1933,94 @@ const UpdateFeatureFlagRequest = z
   })
   .openapi("UpdateFeatureFlagRequest");
 
+const FraudFlagStatus = z.enum(["open", "dismissed", "confirmed"]).openapi("FraudFlagStatus");
+
+const FraudFlagEvidenceEdge = z
+  .object({
+    a: z.string(),
+    b: z.string(),
+    reason: z.string(),
+    detail: z.string(),
+  })
+  .passthrough()
+  .openapi("FraudFlagEvidenceEdge");
+
+const FraudFlagEvidence = z
+  .object({
+    clusterSize: z.number().int().optional(),
+    members: z.array(z.string()).optional(),
+    edges: z.array(FraudFlagEvidenceEdge).optional(),
+    edgeReasonCounts: z.record(z.string(), z.number().int()).optional(),
+  })
+  .passthrough()
+  .openapi("FraudFlagEvidence");
+
+const FraudFlag = z
+  .object({
+    id: z.string().uuid(),
+    clusterKey: z.string(),
+    userId: z.string().uuid(),
+    stellarAddress: z.string(),
+    reason: z.string(),
+    evidence: FraudFlagEvidence,
+    score: z.number().int(),
+    status: FraudFlagStatus,
+    reviewedBy: z.string().nullable(),
+    reviewedAt: z.string().datetime().nullable(),
+    carriedFrom: z.string().uuid().nullable().optional(),
+    correlationId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .openapi("FraudFlag");
+
+const FraudFlagListResponse = z
+  .object({
+    data: z.array(FraudFlag),
+    correlationId: z.string(),
+  })
+  .openapi("FraudFlagListResponse");
+
+const FraudScanRequest = z
+  .object({
+    lookbackMs: z.number().int().positive().max(7 * 24 * 60 * 60 * 1000).optional(),
+    maxPredictions: z.number().int().positive().max(100_000).optional(),
+  })
+  .strict()
+  .openapi("FraudScanRequest");
+
+const FraudScanResult = z
+  .object({
+    scanned: z.number().int(),
+    edges: z.number().int(),
+    clusters: z.number().int(),
+    flagsWritten: z.number().int(),
+    correlationId: z.string().nullable(),
+  })
+  .openapi("FraudScanResult");
+
+const FraudScanResponse = z
+  .object({
+    data: FraudScanResult,
+    correlationId: z.string(),
+  })
+  .openapi("FraudScanResponse");
+
+const FraudFlagReviewRequest = z
+  .object({
+    status: z.enum(["confirmed", "dismissed"]),
+    note: z.string().min(1).max(4000).optional(),
+  })
+  .strict()
+  .openapi("FraudFlagReviewRequest");
+
+const FraudFlagResponse = z
+  .object({
+    data: FraudFlag,
+    correlationId: z.string(),
+  })
+  .openapi("FraudFlagResponse");
+
 registry.registerPath({
   method: "get",
   path: "/api/admin/feature-flags",
@@ -1953,6 +2041,126 @@ registry.registerPath({
     },
     403: {
       description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin/fraud/flags",
+  operationId: "listAdminFraudFlags",
+  tags: ["Admin"],
+  summary: "List fraud flags for review",
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      status: z.enum(["open", "dismissed", "confirmed"]).optional(),
+      limit: z.string().regex(/^\d+$/).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "List of fraud flags",
+      content: {
+        "application/json": { schema: FraudFlagListResponse },
+      },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/admin/fraud/scan",
+  operationId: "runAdminFraudScan",
+  tags: ["Admin"],
+  summary: "Trigger a fraud cluster scan",
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: { content: { "application/json": { schema: FraudScanRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Scan summary",
+      content: {
+        "application/json": { schema: FraudScanResponse },
+      },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/admin/fraud/flags/{id}",
+  operationId: "reviewAdminFraudFlag",
+  tags: ["Admin"],
+  summary: "Review a fraud flag (confirm or dismiss)",
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: { content: { "application/json": { schema: FraudFlagReviewRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Flag reviewed",
+      content: {
+        "application/json": { schema: FraudFlagResponse },
+      },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ValidationErrorBody } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    404: {
+      description: "Fraud flag not found",
+      content: { "application/json": { schema: ErrorBody } },
+    },
+    409: {
+      description: "Invalid transition or concurrent modification",
       content: { "application/json": { schema: ErrorBody } },
     },
     429: {
