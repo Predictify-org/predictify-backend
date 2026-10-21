@@ -58,6 +58,7 @@ export const EXPECTED_ROUTES: RouteEntry[] = [
   { method: "get", path: "/api/comments" },
   { method: "post", path: "/api/comments" },
   { method: "get", path: "/api/markets/{id}/prediction-count" },
+  { method: "post", path: "/api/predictions/claim/prepare" },
   { method: "post", path: "/api/predictions/claim" },
   { method: "get", path: "/api/rate-limit/status" },
   { method: "get", path: "/api/rate-limit" },

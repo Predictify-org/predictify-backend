@@ -13,7 +13,7 @@ Details:
 - At resolution only `confirmed` rows are scored `won`/`lost`. `pending` and `failed` rows keep `result = NULL`.
 - A prediction confirmed after its market resolved is scored in the same `UPDATE` that confirms it, from `markets.winning_outcome`.
 - Existing `won`/`lost` values are never overwritten by replayed resolution or confirmation.
-- `POST /api/predictions/claim` looks at confirmed rows only. If none is a winner it returns `400 prediction_not_winning`; if the user has more than one confirmed row for the market it returns `409 ambiguous_prediction` (both ids are logged) rather than guessing.
+- `POST /api/predictions/claim/prepare` looks at confirmed rows only. If none is a winner it returns `400 prediction_not_winning`; if the user has more than one confirmed row for the market it returns `409 ambiguous_prediction` (both ids are logged) rather than guessing.
 - Legacy rows scored before this rule can be cleaned with `scripts/repair-unconfirmed-results.ts` (dry run by default; `--apply` to write; already-claimed rows are reported, not changed).
 
 ## `GET /api/predictions`
@@ -169,3 +169,155 @@ discarded rather than mis-paginating.
 | Scope                 | Authenticated user only         | Any Stellar address               |
 | Filters               | marketId, status, outcome       | status only                       |
 | Data source           | `predictionRepo.listPredictions`| `userService.getUserPredictions`  |
+
+---
+
+# Claiming winnings (user-signed)
+
+`claim_winnings(user, market_id, claim_nonce)` on the Predictify contract calls
+`user.require_auth()`, so **only the user's wallet can authorise a claim**. The
+backend therefore never signs and never submits a claim on its own. A claim is a
+two-step prepare / sign / submit flow.
+
+## Sequence
+
+```
+Wallet / client                      Backend                          Soroban RPC
+      |                                 |                                  |
+      |-- POST /claim/prepare --------->|                                  |
+      |   { marketId }                  |-- getAccount(user) ------------->|
+      |                                 |-- simulate claim_winnings ------>|
+      |                                 |   (user = source account)        |
+      |<-- { claimId, xdr, passphrase,  |   store claims row "prepared"    |
+      |      expiresAt } ---------------|   (expected tx hash, nonce, ttl) |
+      |                                 |                                  |
+      |  user signs xdr in the wallet   |                                  |
+      |                                 |                                  |
+      |-- POST /claim ----------------->|                                  |
+      |   { claimId, signedXdr }        |  verify: source, contract,       |
+      |                                 |  function, args, inner tx hash   |
+      |                                 |  prepared -> submitting (atomic) |
+      |                                 |-- sendTransaction -------------->|
+      |<-- 200 { claimId, status:paid,  |<-- PENDING / DUPLICATE ----------|
+      |          claimTxHash, ... } ----|  submitting -> paid              |
+      |                                 |                                  |
+      |             settle-confirmer finalises `paid` rows (settled / rejected)
+```
+
+## `POST /api/predictions/claim/prepare`
+
+Request: `{ "marketId": "mkt_5cae97f9_0" }`. `marketId` must be a valid Soroban
+`Symbol`: 1–32 characters of `[A-Za-z0-9_]`.
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "claimId": "0b7a5d5e-3c1f-4e0a-9d51-6d9f9a1c2b11",
+    "xdr": "AAAAAgAAAA...",
+    "networkPassphrase": "Test SDF Network ; September 2015",
+    "expiresAt": "2026-10-19T12:05:00.000Z"
+  }
+}
+```
+
+The transaction is `claim_winnings(user: Address, market_id: Symbol,
+claim_nonce: u64)` with the **user's** account as source, already simulated and
+assembled (fee and Soroban footprint set). It is valid for 5 minutes.
+
+`claim_nonce` is `0` for a first claim and goes up by one for each later claim.
+The backend simulates `get_claim_nonce` when the contract exports it (the slim
+testnet build does not). If it does not, `0` is used only when the user has no
+earlier paid or settled claim for the market; otherwise the call fails with
+`claim_nonce_unavailable`.
+
+Calling prepare again while a claim is outstanding returns the **same** claim
+(same `claimId` and `xdr`) while it is still valid. At most one non-terminal
+claim (`prepared`, `submitting` or `paid`) exists per user and market.
+
+## `POST /api/predictions/claim`
+
+Request: `{ "claimId": "<uuid>", "signedXdr": "<base64>" }`. `signedXdr` is
+base64 and at most 16 KB.
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "claimId": "0b7a5d5e-3c1f-4e0a-9d51-6d9f9a1c2b11",
+    "status": "paid",
+    "predictionId": "11111111-1111-1111-1111-111111111111",
+    "result": "won",
+    "claimTxHash": "9f2c…",
+    "claimedAt": "2026-10-19T12:00:03.000Z"
+  }
+}
+```
+
+### Why the transaction hash is the authority
+
+A wallet signature does not change a transaction's hash. The backend stores the
+hash of the transaction it simulated and accepts a signed envelope only when its
+inner transaction hash is identical, which proves the envelope is exactly the
+prepared transaction: same source, contract, function, arguments, fee,
+footprint and time bounds. Before comparing hashes the backend also checks the
+source account (must be the caller), contract id, function name and each
+argument individually. Those checks exist to return a clear error code, not to
+replace the hash check. A fee-bump wrapper is accepted if its inner transaction
+passes.
+
+## Claim states
+
+| Status       | Meaning                                                                 |
+|--------------|-------------------------------------------------------------------------|
+| `prepared`   | Unsigned transaction issued; waiting for the signed XDR.                |
+| `submitting` | One request owns the claim and is calling `sendTransaction`.            |
+| `paid`       | RPC returned `PENDING` or `DUPLICATE`; `settlement_tx` is set.          |
+| `failed`     | RPC returned `ERROR`; `error_code` holds the mapped code.               |
+| `expired`    | Not submitted before `expiresAt`.                                       |
+| `settled` / `rejected` | Final result written by the settle-confirmer for `paid` rows. |
+
+`prepared → submitting` is a conditional `UPDATE … WHERE status = 'prepared'`,
+so concurrent submits of one claim reach the RPC exactly once; the others get
+the stored result or `409 claim_in_progress`. If `sendTransaction` throws or
+answers `TRY_AGAIN_LATER`, the claim returns to `prepared` and the response is
+`503 claim_rpc_unavailable` — re-submitting the same signed transaction is safe.
+
+## Idempotency
+
+- Replaying a submit for a `paid` (or `settled`) claim returns `200` with the
+  stored result and the same `claimTxHash`.
+- Submitting a `failed` or `expired` claim returns `409`. Call prepare again to
+  get a new claim.
+- These rules hold independently of the global `Idempotency-Key` middleware.
+
+## Error codes
+
+Responses carry only these stable codes and fixed messages. Raw RPC and SDK
+errors are written to structured logs (with the request correlation id) and are
+never returned.
+
+| Code                      | Status | Endpoint | Meaning                                                              |
+|---------------------------|--------|----------|----------------------------------------------------------------------|
+| `validation_error`        | 400    | both     | Bad body (`marketId` not a Symbol, `signedXdr` not base64 / over 16 KB, …). |
+| `market_not_found`        | 404    | prepare  | No such market.                                                      |
+| `market_not_resolved`     | 400    | prepare  | Market is not `resolved`.                                            |
+| `prediction_not_found`    | 404    | prepare  | The caller has no prediction in the market.                          |
+| `prediction_not_winning`  | 400    | prepare  | The prediction did not win.                                          |
+| `claim_already_submitted` | 409    | prepare  | Winnings were already claimed (a `paid` / `settled` claim exists).   |
+| `claim_in_progress`       | 409    | both     | A claim for this market is being submitted.                          |
+| `claim_nonce_unavailable` | 409    | prepare  | `claim_nonce` cannot be determined for a repeat claim.               |
+| `claim_simulation_failed` | 422    | prepare  | The RPC rejected the simulation.                                     |
+| `claim_not_found`         | 404    | submit   | Unknown `claimId`, or it belongs to another user.                    |
+| `claim_xdr_mismatch`      | 400    | submit   | The signed XDR is unsigned, malformed, or not the prepared claim. The RPC is not called. |
+| `claim_expired`           | 409    | submit   | Submitted after `expiresAt` (or the network reported `txTooLate`).   |
+| `claim_rejected`          | 422 / 409 | submit | The network rejected the transaction (409 on replay of a failed claim). |
+| `claim_rpc_unavailable`   | 503    | submit   | The RPC could not be reached; the claim remains submittable.         |
+
+## Metrics
+
+- `claims_prepared_total` — unsigned claims prepared.
+- `claims_submitted_total{outcome}` — submit attempts by outcome: `paid`,
+  `failed`, `expired`, `mismatch`, `error`.

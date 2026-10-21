@@ -1357,57 +1357,175 @@ registry.registerPath({
   },
 });
 
+const ClaimMarketId = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(/^[A-Za-z0-9_]+$/)
+  .openapi({
+    description: "On-chain market id; must be a valid Soroban Symbol (<= 32 chars of [A-Za-z0-9_]).",
+    example: "mkt_5cae97f9_0",
+  });
+
+const ClaimPrepareRequest = z
+  .object({ marketId: ClaimMarketId })
+  .strict()
+  .openapi("ClaimPrepareRequest");
+
+const ClaimPrepareResponse = z
+  .object({
+    data: z.object({
+      claimId: z.string().uuid().openapi({ description: "Pass back to POST /api/predictions/claim." }),
+      xdr: z.string().openapi({
+        description:
+          "Unsigned, simulated claim_winnings(user, market_id, claim_nonce) transaction " +
+          "(base64 XDR) with the caller as source account. Sign it with the user's wallet.",
+      }),
+      networkPassphrase: z.string().openapi({ example: "Test SDF Network ; September 2015" }),
+      expiresAt: z.string().datetime().openapi({
+        description: "After this instant the prepared claim can no longer be submitted.",
+      }),
+    }),
+  })
+  .openapi("ClaimPrepareResponse");
+
 const ClaimRequest = z
-  .object({ marketId: z.string().min(1) })
+  .object({
+    claimId: z.string().uuid(),
+    signedXdr: z.string().min(1).max(16384).openapi({
+      description: "The prepared transaction, signed by the user's wallet (base64 XDR, <= 16 KB).",
+    }),
+  })
   .strict()
   .openapi("ClaimRequest");
 
 const ClaimResponse = z
   .object({
     data: z.object({
-      predictionId: z.string(),
+      claimId: z.string().uuid(),
+      status: z.string().openapi({ description: "paid | settled" }),
+      predictionId: z.string().nullable(),
       result: z.string().nullable(),
-      claimTxHash: z.string().nullable(),
+      claimTxHash: z.string().nullable().openapi({ description: "Soroban transaction hash (settlement_tx)." }),
       claimedAt: z.string().datetime().nullable(),
     }),
   })
   .openapi("ClaimResponse");
+
+const ClaimErrorBody = z
+  .object({
+    error: z.object({
+      code: z.enum([
+        "validation_error",
+        "market_not_found",
+        "market_not_resolved",
+        "prediction_not_found",
+        "prediction_not_winning",
+        "ambiguous_prediction",
+        "claim_not_found",
+        "claim_already_submitted",
+        "claim_in_progress",
+        "claim_simulation_failed",
+        "claim_rejected",
+        "claim_expired",
+        "claim_xdr_mismatch",
+        "claim_nonce_unavailable",
+        "claim_rpc_unavailable",
+      ]),
+      message: z.string().optional(),
+      requestId: z.string().optional(),
+      details: z.any().optional(),
+    }),
+  })
+  .openapi("ClaimErrorBody");
+
+registry.registerPath({
+  method: "post",
+  path: "/api/predictions/claim/prepare",
+  operationId: "prepareClaim",
+  tags: ["Predictions"],
+  summary: "Prepare an unsigned winnings claim for wallet signing",
+  description:
+    "Step 1 of the user-signed claim flow. Validates that the market is resolved and the caller " +
+    "has a winning prediction, resolves claim_nonce, then builds and simulates an unsigned " +
+    "claim_winnings(user, market_id, claim_nonce) transaction with the caller as source. The " +
+    "server never signs. Calling it again while a claim is outstanding returns that same claim. " +
+    "Error codes: market_not_found, market_not_resolved, prediction_not_found, " +
+    "prediction_not_winning, ambiguous_prediction, claim_already_submitted, claim_in_progress, " +
+    "claim_nonce_unavailable, claim_simulation_failed.",
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: { content: { "application/json": { schema: ClaimPrepareRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Unsigned claim transaction prepared",
+      content: { "application/json": { schema: ClaimPrepareResponse } },
+    },
+    400: {
+      description: "Validation error, market not resolved, or prediction not winning",
+      content: { "application/json": { schema: ClaimErrorBody } },
+    },
+    401: { description: "Unauthorized", content: { "application/json": { schema: ErrorBody } } },
+    404: {
+      description: "Market or prediction not found",
+      content: { "application/json": { schema: ClaimErrorBody } },
+    },
+    409: {
+      description:
+        "ambiguous_prediction, already claimed, claim in progress, or claim_nonce_unavailable",
+      content: { "application/json": { schema: ClaimErrorBody } },
+    },
+    422: {
+      description: "claim_simulation_failed",
+      content: { "application/json": { schema: ClaimErrorBody } },
+    },
+  },
+});
 
 registry.registerPath({
   method: "post",
   path: "/api/predictions/claim",
   operationId: "claimPrediction",
   tags: ["Predictions"],
-  summary: "Claim winnings after market resolution",
+  summary: "Submit a wallet-signed winnings claim",
   description:
-    "Builds and submits a Soroban claim transaction for the authenticated user's " +
-    "winning prediction. Idempotent via Idempotency-Key header and internal guard.",
+    "Step 2 of the user-signed claim flow. Accepts the signed XDR for a prepared claim, rejects " +
+    "it unless it is exactly the prepared transaction (network, source account, contract, " +
+    "function, arguments and inner transaction hash), submits it, and records a claims row for " +
+    "the settle-confirmer. Replaying a submit for a paid claim returns the stored result with " +
+    "200; a failed or expired claim returns 409. Error codes: claim_not_found, " +
+    "claim_xdr_mismatch, claim_expired, claim_in_progress, claim_rejected, " +
+    "claim_rpc_unavailable.",
   security: [{ bearerAuth: [] }],
   request: {
     body: { content: { "application/json": { schema: ClaimRequest } } },
   },
   responses: {
     200: {
-      description: "Claim successful (or previously claimed)",
+      description: "Claim submitted (or previously submitted)",
       content: { "application/json": { schema: ClaimResponse } },
     },
     400: {
-      description: "Market not resolved, prediction not winning, or validation error",
-      content: { "application/json": { schema: ErrorBody } },
+      description: "Validation error or claim_xdr_mismatch",
+      content: { "application/json": { schema: ClaimErrorBody } },
     },
     401: { description: "Unauthorized", content: { "application/json": { schema: ErrorBody } } },
     404: {
-      description: "Market or prediction not found",
-      content: { "application/json": { schema: ErrorBody } },
+      description: "claim_not_found",
+      content: { "application/json": { schema: ClaimErrorBody } },
     },
     409: {
-      description:
-        "ambiguous_prediction: more than one confirmed prediction exists for the user and market",
-      content: { "application/json": { schema: ErrorBody } },
+      description: "claim_expired, claim_in_progress, or a previously failed claim",
+      content: { "application/json": { schema: ClaimErrorBody } },
     },
-    500: {
-      description: "Soroban transaction submission failed",
-      content: { "application/json": { schema: ErrorBody } },
+    422: {
+      description: "claim_rejected by the network",
+      content: { "application/json": { schema: ClaimErrorBody } },
+    },
+    503: {
+      description: "claim_rpc_unavailable — the claim is still submittable; retry",
+      content: { "application/json": { schema: ClaimErrorBody } },
     },
   },
 });

@@ -457,25 +457,111 @@ components:
             - cached
       required:
         - data
+    ClaimPrepareResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            claimId:
+              type: string
+              format: uuid
+              description: Pass back to POST /api/predictions/claim.
+            xdr:
+              type: string
+              description: >-
+                Unsigned, simulated claim_winnings(user, market_id, claim_nonce) transaction (base64 XDR) with the
+                caller as source account. Sign it with the user's wallet.
+            networkPassphrase:
+              type: string
+              example: Test SDF Network ; September 2015
+            expiresAt:
+              type: string
+              format: date-time
+              description: After this instant the prepared claim can no longer be submitted.
+          required:
+            - claimId
+            - xdr
+            - networkPassphrase
+            - expiresAt
+      required:
+        - data
+    ClaimErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_error
+                - market_not_found
+                - market_not_resolved
+                - prediction_not_found
+                - prediction_not_winning
+                - ambiguous_prediction
+                - claim_not_found
+                - claim_already_submitted
+                - claim_in_progress
+                - claim_simulation_failed
+                - claim_rejected
+                - claim_expired
+                - claim_xdr_mismatch
+                - claim_nonce_unavailable
+                - claim_rpc_unavailable
+            message:
+              type: string
+            requestId:
+              type: string
+            details:
+              nullable: true
+          required:
+            - code
+      required:
+        - error
+    ClaimPrepareRequest:
+      type: object
+      properties:
+        marketId:
+          type: string
+          minLength: 1
+          maxLength: 32
+          pattern: ^[A-Za-z0-9_]+$
+          description: On-chain market id; must be a valid Soroban Symbol (<= 32 chars of [A-Za-z0-9_]).
+          example: mkt_5cae97f9_0
+      required:
+        - marketId
+      additionalProperties: false
     ClaimResponse:
       type: object
       properties:
         data:
           type: object
           properties:
+            claimId:
+              type: string
+              format: uuid
+            status:
+              type: string
+              description: paid | settled
             predictionId:
               type: string
+              nullable: true
             result:
               type: string
               nullable: true
             claimTxHash:
               type: string
               nullable: true
+              description: Soroban transaction hash (settlement_tx).
             claimedAt:
               type: string
               nullable: true
               format: date-time
           required:
+            - claimId
+            - status
             - predictionId
             - result
             - claimTxHash
@@ -485,11 +571,17 @@ components:
     ClaimRequest:
       type: object
       properties:
-        marketId:
+        claimId:
+          type: string
+          format: uuid
+        signedXdr:
           type: string
           minLength: 1
+          maxLength: 16384
+          description: The prepared transaction, signed by the user's wallet (base64 XDR, <= 16 KB).
       required:
-        - marketId
+        - claimId
+        - signedXdr
       additionalProperties: false
     LeaderboardEntry:
       type: object
@@ -2951,35 +3043,39 @@ paths:
                     error:
                       code: not_found
                       requestId: req_abc123
-  /api/predictions/claim:
+  /api/predictions/claim/prepare:
     post:
-      operationId: claimPrediction
+      operationId: prepareClaim
       tags:
         - Predictions
-      summary: Claim winnings after market resolution
+      summary: Prepare an unsigned winnings claim for wallet signing
       description: >-
-        Builds and submits a Soroban claim transaction for the authenticated user's winning prediction. Idempotent via
-        Idempotency-Key header and internal guard.
+        Step 1 of the user-signed claim flow. Validates that the market is resolved and the caller has a winning
+        prediction, resolves claim_nonce, then builds and simulates an unsigned claim_winnings(user, market_id,
+        claim_nonce) transaction with the caller as source. The server never signs. Calling it again while a claim is
+        outstanding returns that same claim. Error codes: market_not_found, market_not_resolved, prediction_not_found,
+        prediction_not_winning, ambiguous_prediction, claim_already_submitted, claim_in_progress,
+        claim_nonce_unavailable, claim_simulation_failed.
       security:
         - bearerAuth: []
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ClaimRequest'
+              $ref: '#/components/schemas/ClaimPrepareRequest'
       responses:
         '200':
-          description: Claim successful (or previously claimed)
+          description: Unsigned claim transaction prepared
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ClaimResponse'
+                $ref: '#/components/schemas/ClaimPrepareResponse'
         '400':
-          description: Market not resolved, prediction not winning, or validation error
+          description: Validation error, market not resolved, or prediction not winning
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorBody'
+                $ref: '#/components/schemas/ClaimErrorBody'
         '401':
           description: Unauthorized
           content:
@@ -2991,19 +3087,81 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorBody'
+                $ref: '#/components/schemas/ClaimErrorBody'
         '409':
-          description: 'ambiguous_prediction: more than one confirmed prediction exists for the user and market'
+          description: ambiguous_prediction, already claimed, claim in progress, or claim_nonce_unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
+        '422':
+          description: claim_simulation_failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
+  /api/predictions/claim:
+    post:
+      operationId: claimPrediction
+      tags:
+        - Predictions
+      summary: Submit a wallet-signed winnings claim
+      description: >-
+        Step 2 of the user-signed claim flow. Accepts the signed XDR for a prepared claim, rejects it unless it is
+        exactly the prepared transaction (network, source account, contract, function, arguments and inner transaction
+        hash), submits it, and records a claims row for the settle-confirmer. Replaying a submit for a paid claim
+        returns the stored result with 200; a failed or expired claim returns 409. Error codes: claim_not_found,
+        claim_xdr_mismatch, claim_expired, claim_in_progress, claim_rejected, claim_rpc_unavailable.
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: Claim submitted (or previously submitted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '400':
+          description: Validation error or claim_xdr_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
-        '500':
-          description: Soroban transaction submission failed
+        '404':
+          description: claim_not_found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorBody'
+                $ref: '#/components/schemas/ClaimErrorBody'
+        '409':
+          description: claim_expired, claim_in_progress, or a previously failed claim
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
+        '422':
+          description: claim_rejected by the network
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
+        '503':
+          description: claim_rpc_unavailable — the claim is still submittable; retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimErrorBody'
   /api/leaderboard:
     get:
       operationId: getLeaderboard

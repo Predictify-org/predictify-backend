@@ -56,6 +56,20 @@ export const indexerPollsTotal = new Counter({
   registers: [register],
 });
 
+export const indexerEventsDecodedTotal = new Counter({
+  name: "indexer_events_decoded_total",
+  help: "Contract events decoded by the indexer, by topic symbol (unknown topics are grouped as 'unknown')",
+  labelNames: ["event_type"] as const,
+  registers: [register],
+});
+
+export const indexerEventsInvalidTotal = new Counter({
+  name: "indexer_events_invalid_total",
+  help: "Contract events whose topic layout or payload failed validation, by topic symbol",
+  labelNames: ["event_type"] as const,
+  registers: [register],
+});
+
 export const indexerLagLedgers = new Gauge({
   name: "indexer_lag_ledgers",
   help: "Current lag in ledgers between the indexer cursor and the chain tip",
@@ -170,6 +184,19 @@ export const settleConfirmerSettledTotal = new Counter({
 export const settleConfirmerFailedTotal = new Counter({
   name: "settle_confirmer_failed_total",
   help: "Total number of claims permanently marked as failed by the settle-confirmer",
+  registers: [register],
+});
+
+export const claimsPreparedTotal = new Counter({
+  name: "claims_prepared_total",
+  help: "Total number of unsigned claim_winnings transactions prepared for user signing",
+  registers: [register],
+});
+
+export const claimsSubmittedTotal = new Counter({
+  name: "claims_submitted_total",
+  help: "Total number of signed claim submissions, segmented by outcome (paid, failed, expired, mismatch, error)",
+  labelNames: ["outcome"] as const,
   registers: [register],
 });
 
