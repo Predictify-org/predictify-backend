@@ -13,7 +13,7 @@ import {
 
 // ─── Drizzle repository ───────────────────────────────────────────────────────
 
-class DrizzleSettleConfirmerRepo implements SettleConfirmerRepo {
+export class DrizzleSettleConfirmerRepo implements SettleConfirmerRepo {
   private readonly db: ReturnType<typeof drizzle>;
 
   constructor(db: ReturnType<typeof drizzle>) {

@@ -11,14 +11,16 @@
  * ------
  * - All routes require authentication via `requireAuth`.
  * - GET / (list) uses keyset pagination; `nextCursor` is null on the last page.
- * - POST /claim is idempotent via the global Idempotency-Key middleware.
+ * - POST /claim/prepare + POST /claim form the user-signed claim flow; the
+ *   server never signs. Submit is idempotent on its own and via the global
+ *   Idempotency-Key middleware.
  * - GET /:id/explain is a read-only educational endpoint.
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth";
-import { claimWinnings, ClaimError } from "../services/claimService";
+import { prepareClaim, submitClaim, ClaimError } from "../services/claimService";
 import { logger } from "../config/logger";
 import { getRequestId } from "../lib/requestContext";
 import { createPerUserRateLimiter } from "../middleware/rateLimit";
@@ -115,75 +117,148 @@ predictionsRouter.use(
 );
 
 // ---------------------------------------------------------------------------
-// POST /api/predictions/claim
+// POST /api/predictions/claim/prepare  and  POST /api/predictions/claim
 // ---------------------------------------------------------------------------
 
-const claimBodySchema = z
+/** Soroban `Symbol`: at most 32 characters of `[A-Za-z0-9_]`. */
+const sorobanSymbolSchema = z
+  .string()
+  .min(1, "marketId is required")
+  .max(32, "marketId must be at most 32 characters")
+  .regex(/^[A-Za-z0-9_]+$/, "marketId must be a valid Soroban Symbol ([A-Za-z0-9_])");
+
+const claimPrepareBodySchema = z
   .object({
-    marketId: z.string().min(1, "marketId is required"),
+    marketId: sorobanSymbolSchema,
   })
   .strict();
 
+/** Signed transaction envelope: base64, at most 16 KB. */
+const MAX_SIGNED_XDR_LENGTH = 16 * 1024;
+
+const claimSubmitBodySchema = z
+  .object({
+    claimId: z.string().uuid("claimId must be a UUID"),
+    signedXdr: z
+      .string()
+      .min(1, "signedXdr is required")
+      .max(MAX_SIGNED_XDR_LENGTH, "signedXdr exceeds the 16 KB limit")
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/, "signedXdr must be base64"),
+  })
+  .strict();
+
+type ClaimUser = { id: string; stellarAddress: string };
+
+function sendClaimValidationError(res: Response, error: z.ZodError): void {
+  res.status(400).json({
+    error: {
+      code: "validation_error",
+      details: error.flatten().fieldErrors,
+    },
+  });
+}
+
+function sendClaimError(res: Response, e: ClaimError): void {
+  res.status(e.status).json({
+    error: { code: e.code, message: e.message, requestId: getRequestId() },
+  });
+}
+
 /**
- * POST /api/predictions/claim
+ * POST /api/predictions/claim/prepare
  *
- * Claims winnings for a winning prediction after the parent market has been
- * resolved.  Builds and submits a Soroban claim transaction, then persists
- * the on-chain tx hash on the prediction row.
+ * Builds and simulates an unsigned `claim_winnings(user, market_id,
+ * claim_nonce)` transaction with the caller as source. The wallet signs it
+ * and the result is sent to `POST /api/predictions/claim`. The server never
+ * signs. A second prepare while a claim is outstanding returns that claim.
  *
- * Request body:
- * ```json
- * { "marketId": "uuid-or-text-id" }
- * ```
- *
- * Idempotent via:
- *   - Internal guard: if claimTxHash is already set, returns existing data.
- *   - HTTP layer: the global idempotency middleware (Idempotency-Key header).
+ * Request body: `{ "marketId": "<Soroban Symbol>" }`
  *
  * Responses:
- *   200 — Claim successful (or previously claimed — idempotent replay).
- *   400 — Market not resolved, prediction not a winner, or validation error.
+ *   200 — `{ data: { xdr, networkPassphrase, expiresAt, claimId } }`
+ *   400 — Validation error, market not resolved, or prediction not winning.
  *   401 — Missing or invalid Bearer token.
  *   404 — Market or prediction not found.
- *   500 — Soroban transaction submission failed.
+ *   409 — Already claimed, claim in progress, or claim_nonce_unavailable.
+ *   422 — claim_simulation_failed.
  */
-predictionsRouter.post("/claim", async (req, res, next) => {
+predictionsRouter.post("/claim/prepare", async (req, res, next) => {
   try {
-    const parsed = claimBodySchema.safeParse(req.body);
+    const parsed = claimPrepareBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({
-        error: {
-          code: "validation_error",
-          details: parsed.error.flatten().fieldErrors,
-        },
-      });
+      sendClaimValidationError(res, parsed.error);
       return;
     }
 
     const { marketId } = parsed.data;
-    const claimUser = (req as unknown as { user: { id: string; stellarAddress: string } }).user;
-    const requestId = getRequestId();
-
+    const claimUser = (req as unknown as { user: ClaimUser }).user;
     logger.info(
-      { reqId: requestId, marketId, userId: claimUser.id },
-      "claim: processing claim request",
+      { reqId: getRequestId(), marketId, userId: claimUser.id },
+      "claim: processing prepare request",
     );
 
-    const result = await claimWinnings({
+    const data = await prepareClaim({
       marketId,
       userId: claimUser.id,
       stellarAddress: claimUser.stellarAddress,
     });
-
-    logger.info(
-      { reqId: requestId, marketId, userId: claimUser.id, claimTxHash: result.claimTxHash },
-      "claim: completed successfully",
-    );
-
-    res.status(200).json({ data: result });
+    res.status(200).json({ data });
   } catch (e) {
     if (e instanceof ClaimError) {
-      res.status(e.status).json({ error: { code: e.code, message: e.message } });
+      sendClaimError(res, e);
+      return;
+    }
+    next(e);
+  }
+});
+
+/**
+ * POST /api/predictions/claim
+ *
+ * Accepts the wallet-signed XDR for a prepared claim, checks that it is
+ * exactly the prepared transaction, submits it, and records the result for
+ * the settle-confirmer.
+ *
+ * Request body: `{ "claimId": "<uuid>", "signedXdr": "<base64, <= 16 KB>" }`
+ *
+ * Idempotent: replaying a submit for a `paid` claim returns the stored result
+ * with 200; a `failed` or `expired` claim returns 409. This holds
+ * independently of the global Idempotency-Key middleware.
+ *
+ * Responses:
+ *   200 — Submitted (or previously submitted).
+ *   400 — Validation error or claim_xdr_mismatch.
+ *   401 — Missing or invalid Bearer token.
+ *   404 — Claim not found.
+ *   409 — claim_expired, claim_in_progress, or a previously failed claim.
+ *   422 — claim_rejected.
+ *   503 — claim_rpc_unavailable (safe to retry).
+ */
+predictionsRouter.post("/claim", async (req, res, next) => {
+  try {
+    const parsed = claimSubmitBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendClaimValidationError(res, parsed.error);
+      return;
+    }
+
+    const { claimId, signedXdr } = parsed.data;
+    const claimUser = (req as unknown as { user: ClaimUser }).user;
+    logger.info(
+      { reqId: getRequestId(), claimId, userId: claimUser.id },
+      "claim: processing submit request",
+    );
+
+    const data = await submitClaim({
+      claimId,
+      signedXdr,
+      userId: claimUser.id,
+      stellarAddress: claimUser.stellarAddress,
+    });
+    res.status(200).json({ data });
+  } catch (e) {
+    if (e instanceof ClaimError) {
+      sendClaimError(res, e);
       return;
     }
     next(e);
