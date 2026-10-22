@@ -1797,6 +1797,98 @@ components:
         - onChainSnapshot
         - summary
         - diffs
+    PayoutReconciliationReportItem:
+      type: object
+      properties:
+        reportId:
+          type: string
+        fingerprint:
+          type: string
+        status:
+          type: string
+          enum:
+            - ok
+            - discrepancies_found
+        since:
+          type: string
+          nullable: true
+        until:
+          type: string
+          nullable: true
+        totalKeys:
+          type: integer
+        matchedKeys:
+          type: integer
+        unmatchedKeys:
+          type: integer
+        discrepancyCount:
+          type: integer
+        summary:
+          type: object
+          additionalProperties:
+            type: integer
+        createdAt:
+          type: string
+      required:
+        - reportId
+        - fingerprint
+        - status
+        - since
+        - until
+        - totalKeys
+        - matchedKeys
+        - unmatchedKeys
+        - discrepancyCount
+        - summary
+        - createdAt
+    PayoutDiscrepancy:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+            - claimed_on_chain_missing_in_db
+            - db_paid_missing_on_chain
+            - amount_mismatch
+            - claim_for_losing_prediction
+            - duplicate_on_chain_claim
+            - stale_unclaimed
+        userId:
+          type: string
+        stellarAddress:
+          type: string
+        marketId:
+          type: string
+        predictionId:
+          type: string
+        claimId:
+          type: string
+        txHash:
+          type: string
+        dbAmount:
+          type: string
+        onChainAmount:
+          type: string
+        difference:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            nullable: true
+      required:
+        - kind
+        - marketId
+    PayoutReconciliationReportDetail:
+      allOf:
+        - $ref: '#/components/schemas/PayoutReconciliationReportItem'
+        - type: object
+          properties:
+            discrepancies:
+              type: array
+              items:
+                $ref: '#/components/schemas/PayoutDiscrepancy'
+          required:
+            - discrepancies
     DeliveryStatus:
       type: string
       enum:
@@ -5390,6 +5482,145 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '404':
           description: Market not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/recon/reports:
+    get:
+      operationId: adminListReconciliationReports
+      tags:
+        - Admin
+      summary: List payout reconciliation reports (admin only)
+      description: >-
+        Lists persisted payout reconciliation reports with keyset pagination. Access is restricted to admins with
+        REPORT_READ scope.
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: Number of reports to return (max 100)
+          required: false
+          description: Number of reports to return (max 100)
+          name: limit
+          in: query
+        - schema:
+            type: string
+            description: Keyset pagination cursor
+          required: false
+          description: Keyset pagination cursor
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            description: ISO datetime lower bound
+          required: false
+          description: ISO datetime lower bound
+          name: since
+          in: query
+        - schema:
+            type: string
+            description: ISO datetime upper bound
+          required: false
+          description: ISO datetime upper bound
+          name: until
+          in: query
+      responses:
+        '200':
+          description: List of reconciliation reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PayoutReconciliationReportItem'
+                  meta:
+                    type: object
+                    properties:
+                      nextCursor:
+                        type: string
+                        nullable: true
+                      limit:
+                        type: integer
+                    required:
+                      - nextCursor
+                      - limit
+                required:
+                  - data
+                  - meta
+        '400':
+          description: Validation error — invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '403':
+          description: Forbidden — missing or non-admin JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /api/admin/recon/reports/{id}:
+    get:
+      operationId: adminGetReconciliationReport
+      tags:
+        - Admin
+      summary: Get payout reconciliation report details (admin only)
+      description: >-
+        Retrieves a persisted payout reconciliation report and all of its discrepancies. Access is restricted to admins
+        with REPORT_READ scope.
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: Report ID
+          required: true
+          description: Report ID
+          name: id
+          in: path
+      responses:
+        '200':
+          description: Reconciliation report detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PayoutReconciliationReportDetail'
+                required:
+                  - data
+        '400':
+          description: Validation error — invalid report ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorBody'
+        '403':
+          description: Forbidden — missing or non-admin JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Report not found
           content:
             application/json:
               schema:

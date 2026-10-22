@@ -346,3 +346,11 @@ export const schedulerRunsTotal = new Counter({
   labelNames: ["task", "outcome"] as const,
   registers: [register],
 });
+
+export const reconciliationDiscrepanciesTotal = new Counter({
+  name: "reconciliation_discrepancies_total",
+  help: "Total number of reconciliation discrepancies detected, by kind",
+  labelNames: ["kind"] as const,
+  registers: [register],
+});
+
